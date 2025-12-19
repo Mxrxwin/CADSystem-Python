@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                                QPushButton, QLabel, QComboBox, QDoubleSpinBox, QGroupBox,
                                QGridLayout, QSpinBox, QColorDialog, QMessageBox, QToolBar,
                                QStatusBar, QMenu, QSizePolicy, QSplitter, QScrollArea,
-                               QTableWidget, QTableWidgetItem, QHeaderView)
+                               QTableWidget, QTableWidgetItem, QHeaderView, QToolButton)
 from PySide6.QtCore import QPointF, Qt, QSize, QRectF
 from PySide6.QtGui import QColor, QAction, QIcon, QKeySequence, QPixmap, QPainter, QPen
 
@@ -12,6 +12,7 @@ from widgets.coordinate_system import CoordinateSystemWidget
 from widgets.line_style import LineStyleManager
 from ui.style_panels import ObjectPropertiesPanel, StyleManagementPanel, StyleComboBox
 from ui.edit_dialog import EditDialog
+from ui.icons import toolbar_icons
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -37,6 +38,9 @@ class MainWindow(QMainWindow):
         
         # Выделенные объекты
         self.selected_objects = []
+        
+        # Последний созданный объект для undo
+        self.last_created_object = None
         
         self.init_ui()
         
@@ -153,6 +157,38 @@ class MainWindow(QMainWindow):
         left_widget.setMinimumWidth(320)  # Минимальная ширина для внутреннего виджета
         scroll_area.hide()  # Скрываем по умолчанию, показывается после выбора примитива
         
+        # Панель редактирования (показывается вместо панели инструментов при редактировании)
+        self.edit_panel_widget = QWidget()
+        self.edit_panel_layout = QVBoxLayout(self.edit_panel_widget)
+        self.edit_panel_layout.setContentsMargins(5, 5, 5, 5)
+        self.edit_panel_layout.setSpacing(10)
+        
+        # Заголовок
+        self.edit_title_label = QLabel("Редактирование объекта")
+        self.edit_title_label.setStyleSheet("font-weight: bold; font-size: 12pt;")
+        self.edit_panel_layout.addWidget(self.edit_title_label)
+        
+        # Блок со свойствами объекта (будет добавлен позже, после создания object_properties_panel)
+        # Контейнер для содержимого редактирования (будет заполняться из edit_dialog)
+        self.edit_panel_layout.addStretch()
+        
+        # Кнопка закрытия редактирования
+        self.close_edit_btn = QPushButton("Закрыть редактирование")
+        self.close_edit_btn.clicked.connect(self.close_edit_panel)
+        self.edit_panel_layout.addWidget(self.close_edit_btn)
+        
+        # Обёртка в скролл для панели редактирования
+        edit_scroll_area = QScrollArea()
+        edit_scroll_area.setWidget(self.edit_panel_widget)
+        edit_scroll_area.setWidgetResizable(True)
+        edit_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        edit_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        edit_scroll_area.setMinimumWidth(340)
+        self.edit_panel_widget.setMinimumWidth(320)
+        edit_scroll_area.hide()  # Скрыта по умолчанию
+        
+        self.edit_scroll_area = edit_scroll_area
+        
         # Создаем комбобокс для совместимости (скрытый, используется внутренне)
         self.primitive_combo = QComboBox()
         # Добавляем примитивы с иконками
@@ -162,16 +198,18 @@ class MainWindow(QMainWindow):
         
         self.primitive_combo.currentTextChanged.connect(self.change_primitive_type)
         
-        # Создаем splitter для левой части (панель инструментов + блок настроек)
+        # Создаем splitter для левой части (панель инструментов + блок настроек/редактирования)
         left_splitter = QSplitter(Qt.Horizontal)
         left_splitter.setHandleWidth(8)
         left_splitter.setChildrenCollapsible(False)
         left_splitter.setOpaqueResize(True)
         left_splitter.addWidget(primitive_toolbar)
         left_splitter.addWidget(scroll_area)
-        left_splitter.setSizes([70, 400])  # Панель инструментов узкая, блок настроек шире
+        left_splitter.addWidget(edit_scroll_area)
+        left_splitter.setSizes([70, 400, 0])  # Панель инструментов узкая, блок настроек шире, редактирование скрыта
         left_splitter.setCollapsible(0, False)
         left_splitter.setCollapsible(1, False)
+        left_splitter.setCollapsible(2, False)
         
         # панель инструментов (скрыта по умолчанию, показывается после выбора примитива)
         tools_group = QGroupBox("Инструменты")
@@ -285,31 +323,6 @@ class MainWindow(QMainWindow):
         self.ellipse_method_widget.hide()
         tools_layout.addWidget(self.ellipse_method_widget)
 
-        # Кнопки удаления в одну строку для экономии места
-        delete_buttons_layout = QHBoxLayout()
-        
-        self.delete_last_btn = QPushButton("Последний")
-        self.delete_last_btn.setToolTip("Удалить последний объект")
-        self.delete_last_btn.clicked.connect(self.delete_last_line)
-
-        self.delete_all_btn = QPushButton("Все")
-        self.delete_all_btn.setToolTip("Удалить все объекты")
-        self.delete_all_btn.clicked.connect(self.delete_all_lines)
-        
-        self.delete_selected_btn = QPushButton("Выбранное")
-        self.delete_selected_btn.setToolTip("Удалить выбранные объекты")
-        self.delete_selected_btn.clicked.connect(self.delete_selected_objects)
-        self.delete_selected_btn.setEnabled(False)  # По умолчанию отключена, пока нет выделения
-
-        delete_buttons_layout.addWidget(self.delete_last_btn)
-        delete_buttons_layout.addWidget(self.delete_all_btn)
-        delete_buttons_layout.addWidget(self.delete_selected_btn)
-        
-        # Добавляем метку для кнопок удаления
-        delete_label = QLabel("Удалить:")
-        tools_layout.addWidget(delete_label)
-        tools_layout.addLayout(delete_buttons_layout)
-        
         # Группы для сплайна (добавляем в tools_group, чтобы не скрывалась с input_group)
         self.spline_control_points_group = QWidget()
         spline_cp_layout = QVBoxLayout()
@@ -810,7 +823,7 @@ class MainWindow(QMainWindow):
         left_panel.addWidget(self.lines_count_label)
         
         # Добавляем панели стилей
-        # Панель свойств объекта
+        # Панель свойств объекта (будет перемещена в панель редактирования)
         self.object_properties_panel = ObjectPropertiesPanel(self.style_manager)
         self.object_properties_panel.style_changed.connect(self.on_object_style_changed)
         # Устанавливаем ссылку на canvas для доступа к линиям
@@ -819,7 +832,9 @@ class MainWindow(QMainWindow):
         self.canvas.selection_changed.connect(self.on_selection_changed)
         # Скрываем панель по умолчанию (пока нет выделенных объектов)
         self.object_properties_panel.hide()
-        left_panel.addWidget(self.object_properties_panel)
+        # Добавляем панель свойств в панель редактирования (выше содержимого редактирования)
+        # Находим позицию для вставки (после заголовка, перед stretch)
+        self.edit_panel_layout.insertWidget(1, self.object_properties_panel)
         
         # Панель управления стилями
         self.style_management_panel = StyleManagementPanel(self.style_manager)
@@ -1025,10 +1040,36 @@ class MainWindow(QMainWindow):
         # панель инструментов навигации
         toolbar = QToolBar("Навигация")
         toolbar.setIconSize(QSize(24, 24))
+        # Устанавливаем белый фон только у кнопок, не у всей панели
+        toolbar.setStyleSheet("""
+            QToolBar {
+                border: none;
+            }
+            QToolButton {
+                background-color: white;
+                border: 1px solid #ccc;
+                border-radius: 3px;
+                margin: 2px;
+            }
+            QToolButton:hover {
+                background-color: #f0f0f0;
+            }
+            QToolButton:pressed {
+                background-color: #e0e0e0;
+            }
+            QToolButton:checked {
+                background-color: #d0d0d0;
+                border: 2px solid #0078d4;
+            }
+        """)
         self.addToolBar(toolbar)
         
+        # Кэш иконок тулбара (SVG)
+        if not hasattr(self, "_toolbar_icon_cache"):
+            self._toolbar_icon_cache = toolbar_icons(size=24)
+
         # инструмент "Рука" для панорамирования
-        self.pan_action = QAction("✋", self)
+        self.pan_action = QAction(self._toolbar_icon_cache.get("pan", QIcon()), "", self)
         self.pan_action.setCheckable(True)
         self.pan_action.setToolTip("Панорамирование (Пробел)")
         self.pan_action.setShortcut(Qt.Key_Space)
@@ -1038,21 +1079,21 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         
         # увеличение
-        zoom_in_action = QAction("➕", self)  # Плюс в квадрате - стандартный символ увеличения
+        zoom_in_action = QAction(self._toolbar_icon_cache.get("zoom_in", QIcon()), "", self)
         zoom_in_action.setToolTip("Увеличить (Ctrl++)")
         zoom_in_action.setShortcut(QKeySequence.ZoomIn)
         zoom_in_action.triggered.connect(self.canvas.zoom_in)
         toolbar.addAction(zoom_in_action)
         
         # уменьшение
-        zoom_out_action = QAction("➖", self)  # Минус в квадрате - стандартный символ уменьшения
+        zoom_out_action = QAction(self._toolbar_icon_cache.get("zoom_out", QIcon()), "", self)
         zoom_out_action.setToolTip("Уменьшить (Ctrl+-)")
         zoom_out_action.setShortcut(QKeySequence.ZoomOut)
         zoom_out_action.triggered.connect(self.canvas.zoom_out)
         toolbar.addAction(zoom_out_action)
         
         # показать всё сохраняя поворот
-        show_all_action = QAction("⊞", self)  # Квадрат с четырьмя стрелками - стандартный символ для "показать всё"
+        show_all_action = QAction(self._toolbar_icon_cache.get("show_all", QIcon()), "", self)
         show_all_action.setToolTip("Показать всё (сохранить поворот)")
         show_all_action.triggered.connect(self.canvas.show_all)
         toolbar.addAction(show_all_action)
@@ -1060,21 +1101,21 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         
         # поворот налево (против часовой стрелки)
-        rotate_left_action = QAction("↺", self)
+        rotate_left_action = QAction(self._toolbar_icon_cache.get("rotate_left", QIcon()), "", self)
         rotate_left_action.setToolTip("Повернуть налево (Ctrl+Left)")
         rotate_left_action.setShortcut("Ctrl+Left")
         rotate_left_action.triggered.connect(self.rotate_left)
         toolbar.addAction(rotate_left_action)
         
         # поворот направо (по часовой стрелке)
-        rotate_right_action = QAction("↻", self)
+        rotate_right_action = QAction(self._toolbar_icon_cache.get("rotate_right", QIcon()), "", self)
         rotate_right_action.setToolTip("Повернуть направо (Ctrl+Right)")
         rotate_right_action.setShortcut("Ctrl+Right")
         rotate_right_action.triggered.connect(self.rotate_right)
         toolbar.addAction(rotate_right_action)
         
         # сброс вида
-        reset_view_action = QAction("↶", self)  # Стрелка поворота влево - символ сброса/возврата
+        reset_view_action = QAction(self._toolbar_icon_cache.get("reset_view", QIcon()), "", self)
         reset_view_action.setToolTip("Сбросить вид (Ctrl+R)")
         reset_view_action.triggered.connect(self.canvas.reset_view)
         toolbar.addAction(reset_view_action)
@@ -1082,15 +1123,55 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         
         # Кнопка редактирования
-        edit_action = QAction("Редактировать", self)
-        edit_action.setToolTip("Открыть окно редактирования выделенного объекта")
-        edit_action.triggered.connect(self.open_edit_dialog)
-        toolbar.addAction(edit_action)
+        self.edit_action = QAction(self._toolbar_icon_cache.get("edit", QIcon()), "Редактировать", self)
+        self.edit_action.setToolTip("Открыть окно редактирования выделенного объекта")
+        self.edit_action.triggered.connect(self.open_edit_dialog)
+        toolbar.addAction(self.edit_action)
+        
+        toolbar.addSeparator()
+        
+        # Блок с кнопками удаления (ластик и undo)
+        delete_widget = QWidget()
+        delete_layout = QHBoxLayout(delete_widget)
+        delete_layout.setContentsMargins(5, 0, 5, 0)
+        delete_layout.setSpacing(5)
+        
+        # Кнопка ластика (удалить все)
+        eraser_action = QAction(self._toolbar_icon_cache.get("erase", QIcon()), "", self)
+        eraser_action.setToolTip("Удалить все объекты")
+        eraser_action.triggered.connect(self.erase_all_objects)
+        
+        # Кнопка undo (отменить последнее действие)
+        undo_action = QAction(self._toolbar_icon_cache.get("undo", QIcon()), "", self)
+        undo_action.setToolTip("Отменить последнее действие (удалить последний объект)")
+        undo_action.triggered.connect(self.undo_last_object)
+        
+        # Создаем кнопки из действий
+        eraser_btn = QToolButton()
+        eraser_btn.setDefaultAction(eraser_action)
+        eraser_btn.setIconSize(QSize(24, 24))
+        
+        undo_btn = QToolButton()
+        undo_btn.setDefaultAction(undo_action)
+        undo_btn.setIconSize(QSize(24, 24))
+        
+        delete_layout.addWidget(eraser_btn)
+        delete_layout.addWidget(undo_btn)
+
+        
+        toolbar.addWidget(delete_widget)
+
+        toolbar.addSeparator()
     
     def create_style_toolbar(self):
         """Создает панель инструментов для стилей линий"""
         style_toolbar = QToolBar("Стили линий")
         style_toolbar.setIconSize(QSize(24, 24))
+        style_toolbar.setStyleSheet("""
+            QToolBar {
+                border: none;
+            }
+        """)
         self.addToolBar(style_toolbar)
         
         # Выпадающий список текущего стиля
@@ -1103,16 +1184,6 @@ class MainWindow(QMainWindow):
         
         style_toolbar.addSeparator()
         
-        # Кнопки быстрого доступа к популярным стилям
-        popular_styles = ["Сплошная основная", "Сплошная тонкая", "Штриховая", "Штрихпунктирная тонкая"]
-        
-        for style_name in popular_styles:
-            style = self.style_manager.get_style(style_name)
-            if style:
-                action = QAction(style_name, self)
-                action.setToolTip(f"Установить стиль: {style_name}")
-                action.triggered.connect(lambda checked, name=style_name: self.set_current_style(name))
-                style_toolbar.addAction(action)
     
     def on_current_style_changed(self):
         """Обработчик изменения текущего стиля"""
@@ -1136,34 +1207,200 @@ class MainWindow(QMainWindow):
         """Обработчик изменения выделения"""
         # Обновляем выделенные объекты
         self.selected_objects = selected_objects
-        # Включаем/отключаем кнопку удаления выбранного
-        if hasattr(self, 'delete_selected_btn'):
-            self.delete_selected_btn.setEnabled(len(selected_objects) > 0)
+        
         # Показываем или скрываем панель свойств в зависимости от выделения
-        if selected_objects:
-            self.object_properties_panel.show()
-            # Обновляем панель свойств
-            self.object_properties_panel.set_selected_objects(selected_objects)
+        # Но только если не открыта панель редактирования
+        if not hasattr(self, 'editing_object') or self.editing_object is None:
+            if selected_objects:
+                self.object_properties_panel.show()
+                # Обновляем панель свойств
+                self.object_properties_panel.set_selected_objects(selected_objects)
+            else:
+                self.object_properties_panel.hide()
         else:
-            self.object_properties_panel.hide()
+            # Если открыта панель редактирования, обновляем панель свойств, но не меняем видимость
+            if selected_objects:
+                self.object_properties_panel.set_selected_objects(selected_objects)
+        
         # Обновляем информацию об объекте
         self.update_info()
     
     def open_edit_dialog(self):
-        """Открывает окно редактирования для выделенного объекта"""
+        """Открывает панель редактирования для выделенного объекта"""
+        # Проверяем, не открыта ли уже панель редактирования
+        if hasattr(self, 'editing_object') and self.editing_object is not None:
+            # Панель редактирования уже открыта
+            return
+        
         selected_objects = self.selected_objects
         if len(selected_objects) == 1:
             obj = selected_objects[0]
-            self.edit_dialog.set_object(obj)
+            self.show_edit_panel(obj)
             # Обновляем информацию для редактируемого объекта
             self.update_info_for_object(obj)
-            self.edit_dialog.show()
         elif len(selected_objects) > 1:
             QMessageBox.information(self, "Редактирование", 
                                   "Пожалуйста, выберите один объект для редактирования.")
         else:
             QMessageBox.information(self, "Редактирование", 
                                   "Пожалуйста, выберите объект для редактирования.")
+    
+    def show_edit_panel(self, obj):
+        """Показывает панель редактирования для объекта"""
+        # Скрываем панель инструментов
+        if hasattr(self, 'scroll_area'):
+            self.scroll_area.hide()
+        
+        # Блокируем кнопки примитивов
+        self._block_primitive_buttons(True)
+        
+        # Блокируем кнопку редактирования
+        if hasattr(self, 'edit_action'):
+            self.edit_action.setEnabled(False)
+        
+        # Убеждаемся, что object_properties_panel находится в правильном месте
+        # Проверяем, есть ли он в layout
+        properties_panel_in_layout = False
+        for i in range(self.edit_panel_layout.count()):
+            item = self.edit_panel_layout.itemAt(i)
+            if item and item.widget() == self.object_properties_panel:
+                properties_panel_in_layout = True
+                break
+        
+        # Если object_properties_panel не в layout, добавляем его после заголовка
+        if not properties_panel_in_layout and hasattr(self, 'object_properties_panel'):
+            # Удаляем из старого родителя, если есть
+            if self.object_properties_panel.parent():
+                old_layout = self.object_properties_panel.parent().layout()
+                if old_layout:
+                    old_layout.removeWidget(self.object_properties_panel)
+            self.object_properties_panel.setParent(None)
+            # Вставляем после заголовка
+            self.edit_panel_layout.insertWidget(1, self.object_properties_panel)
+        
+        # Используем edit_dialog для создания содержимого
+        self.edit_dialog.set_object(obj)
+        
+        # Копируем содержимое из диалога в панель
+        self._populate_edit_panel_from_dialog()
+        
+        # Показываем панель свойств объекта в панели редактирования
+        if hasattr(self, 'object_properties_panel'):
+            self.object_properties_panel.show()
+        
+        # Показываем панель редактирования
+        self.edit_scroll_area.show()
+        
+        # Сохраняем ссылку на редактируемый объект
+        self.editing_object = obj
+    
+    def _populate_edit_panel_from_dialog(self):
+        """Копирует содержимое из edit_dialog в панель редактирования"""
+        # Структура: заголовок, object_properties_panel, содержимое редактирования, stretch, кнопка закрытия
+        
+        # Находим индексы важных элементов
+        properties_panel_index = -1
+        old_content_index = -1
+        
+        for i in range(self.edit_panel_layout.count()):
+            item = self.edit_panel_layout.itemAt(i)
+            if item and item.widget():
+                widget = item.widget()
+                if widget == self.object_properties_panel:
+                    properties_panel_index = i
+                # Ищем старое содержимое редактирования (content_widget из edit_dialog)
+                elif hasattr(self.edit_dialog, 'content_widget') and widget == self.edit_dialog.content_widget:
+                    old_content_index = i
+        
+        # Удаляем старое содержимое редактирования, если оно есть
+        if old_content_index >= 0:
+            item = self.edit_panel_layout.takeAt(old_content_index)
+            if item and item.widget():
+                widget = item.widget()
+                widget.setParent(None)
+                widget.deleteLater()
+        
+        # Используем содержимое из edit_dialog напрямую
+        if hasattr(self.edit_dialog, 'content_widget'):
+            content_widget = self.edit_dialog.content_widget
+            # Удаляем виджет из его текущего родителя, если есть
+            if content_widget.parent():
+                old_layout = content_widget.parent().layout()
+                if old_layout:
+                    # Удаляем из старого layout
+                    for i in range(old_layout.count()):
+                        item = old_layout.itemAt(i)
+                        if item and item.widget() == content_widget:
+                            old_layout.removeWidget(content_widget)
+                            break
+                content_widget.setParent(None)
+            
+            # Добавляем виджет в панель редактирования после object_properties_panel
+            # Если properties_panel_index найден, вставляем после него
+            if properties_panel_index >= 0:
+                insert_index = properties_panel_index + 1
+            else:
+                # Если properties_panel не найден, вставляем после заголовка
+                insert_index = 1
+            
+            # Проверяем, что на позиции insert_index не stretch
+            item_at_pos = self.edit_panel_layout.itemAt(insert_index)
+            if item_at_pos and item_at_pos.spacerItem():
+                # Если на этой позиции stretch, вставляем перед ним (на его место)
+                # Удаляем stretch временно
+                stretch_item = self.edit_panel_layout.takeAt(insert_index)
+                self.edit_panel_layout.insertWidget(insert_index, content_widget)
+                # Возвращаем stretch после content_widget
+                self.edit_panel_layout.insertItem(insert_index + 1, stretch_item)
+            else:
+                self.edit_panel_layout.insertWidget(insert_index, content_widget)
+    
+    def close_edit_panel(self):
+        """Закрывает панель редактирования"""
+        # Отключаем режим редактирования (перемещение точек), если он был включен
+        if hasattr(self.edit_dialog, 'editing_mode') and self.edit_dialog.editing_mode:
+            self.edit_dialog.editing_mode = False
+            if hasattr(self.canvas, 'set_editing_mode'):
+                self.canvas.set_editing_mode(False, None)
+            if hasattr(self.edit_dialog, 'dragging_point'):
+                self.edit_dialog.dragging_point = None
+        
+        # Удаляем содержимое редактирования из панели (но не object_properties_panel)
+        if hasattr(self.edit_dialog, 'content_widget'):
+            content_widget = self.edit_dialog.content_widget
+            if content_widget.parent() == self.edit_panel_widget:
+                self.edit_panel_layout.removeWidget(content_widget)
+                content_widget.setParent(None)
+                # Не удаляем виджет, так как он может быть использован снова
+        
+        self.edit_scroll_area.hide()
+        
+        # Разблокируем кнопки примитивов
+        self._block_primitive_buttons(False)
+        
+        # Разблокируем кнопку редактирования
+        if hasattr(self, 'edit_action'):
+            self.edit_action.setEnabled(True)
+        
+        # НЕ скрываем панель свойств объекта - она должна оставаться видимой если есть выделение
+        # Она будет скрыта автоматически через on_selection_changed если выделение снято
+        
+        # Показываем панель инструментов, если был выбран примитив
+        if hasattr(self, 'scroll_area') and hasattr(self, 'primitive_buttons'):
+            any_checked = any(b.isChecked() for b in self.primitive_buttons)
+            if any_checked:
+                self.scroll_area.show()
+        
+        self.editing_object = None
+    
+    def _block_primitive_buttons(self, block):
+        """Блокирует или разблокирует кнопки примитивов"""
+        if hasattr(self, 'primitive_buttons'):
+            for btn in self.primitive_buttons:
+                btn.setEnabled(not block)
+                if block:
+                    # Снимаем выделение с кнопок при блокировке
+                    btn.setChecked(False)
     
     def create_statusbar(self):
         # строка состояния
@@ -1293,6 +1530,31 @@ class MainWindow(QMainWindow):
         
         # Обновляем отображение
         self.canvas.update()
+    
+    def erase_all_objects(self):
+        """Удаляет все объекты на сцене (ластик)"""
+        self.canvas.delete_all_lines()
+        # Сбрасываем последний объект
+        self.last_created_object = None
+        self.update_info()
+    
+    def undo_last_object(self):
+        """Отменяет последнее действие - удаляет последний созданный объект"""
+        # Получаем все объекты из сцены
+        objects = self.canvas.scene.get_objects()
+        if objects:
+            # Берем последний объект
+            last_obj = objects[-1]
+            # Удаляем его
+            self.canvas.scene.remove_object(last_obj)
+            # Обновляем последний созданный объект
+            if len(objects) > 1:
+                self.last_created_object = objects[-2]
+            else:
+                self.last_created_object = None
+            # Обновляем отображение
+            self.canvas.update()
+            self.update_info()
     
     def apply_coordinates(self):
         # координаты из полей ввода и фикс объекта
@@ -3013,6 +3275,18 @@ class MainWindow(QMainWindow):
         
         painter.end()
         return QIcon(pixmap)
+    
+    def _create_toolbar_icon(self, icon_type: str) -> QIcon:
+        """
+        Legacy wrapper (kept for safety): returns SVG icon from the toolbar cache.
+
+        Old painter-based icon rendering was fragile and could break on some platforms.
+        """
+        if not hasattr(self, "_toolbar_icon_cache"):
+            self._toolbar_icon_cache = toolbar_icons(size=24)
+        return self._toolbar_icon_cache.get(icon_type, QIcon())
+    
+    def _update_info(self):
         self.info_label2.setText("Первая точка:")
         self.info_value2.setText(f"({first_point.x():.2f}, {first_point.y():.2f})")
         self.info_label3.setText("Последняя точка:")
