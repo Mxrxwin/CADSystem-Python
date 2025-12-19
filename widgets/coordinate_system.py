@@ -1902,12 +1902,37 @@ class CoordinateSystemWidget(QWidget):
             self.last_mouse_pos = None
     
     def wheelEvent(self, event):
-        """Обработчик колесика мыши"""
-        zoom_factor = 1.1
-        if event.angleDelta().y() > 0:
-            self.viewport.zoom_at_point(event.position(), zoom_factor)
+        """Обработчик колесика мыши и тачпада"""
+        # Приоритет pixelDelta для тачпадов (более плавное управление на Mac)
+        pixel_delta = event.pixelDelta()
+        angle_delta = event.angleDelta()
+        
+        # Определяем тип события и получаем дельту
+        is_touchpad = pixel_delta.y() != 0
+        delta = pixel_delta.y() if is_touchpad else angle_delta.y()
+        
+        if delta == 0:
+            return  # Нет изменения
+        
+        # Базовый коэффициент масштабирования для обычной мыши
+        base_zoom_factor = 1.1
+        
+        if is_touchpad:
+            # Для тачпада используем более плавное масштабирование
+            # pixelDelta обычно в пикселях, нормализуем для плавности
+            # Значения могут варьироваться, обычно от -30 до +30
+            # Используем более чувствительный коэффициент для лучшего отклика
+            normalized_delta = delta / 60.0  # Нормализуем (делим на меньшее значение для большей чувствительности)
+            # Ограничиваем для предотвращения слишком резких изменений
+            normalized_delta = max(-2.0, min(2.0, normalized_delta))
+            # Плавное, но отзывчивое изменение: каждый шаг дает изменение примерно на 2-3%
+            zoom_factor = 1.0 + normalized_delta * 0.035
         else:
-            self.viewport.zoom_at_point(event.position(), 1.0 / zoom_factor)
+            # Для обычной мыши используем стандартный коэффициент
+            zoom_factor = base_zoom_factor if delta > 0 else 1.0 / base_zoom_factor
+        
+        # Применяем масштабирование
+        self.viewport.zoom_at_point(event.position(), zoom_factor)
         self.view_changed.emit()
         self.update()
     
