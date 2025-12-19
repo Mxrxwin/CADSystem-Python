@@ -17,7 +17,10 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Построение отрезков в различных системах координат")
-        self.setGeometry(100, 100, 1200, 800)
+        # Увеличенный размер окна для комфортного размещения всех элементов
+        self.setGeometry(100, 100, 1600, 1000)
+        # Устанавливаем минимальный размер, чтобы окно можно было изменять, но не сделать слишком маленьким
+        self.setMinimumSize(1400, 800)
         
         self.coordinate_system = "cartesian"  # "cartesian" или "polar" (для обратной совместимости)
         self.angle_units = "degrees"  # "degrees" или "radians" (для обратной совместимости)
@@ -69,8 +72,14 @@ class MainWindow(QMainWindow):
         # строка состояния
         self.create_statusbar()
         
-        # Используем Splitter для разделения панелей
+        # Используем Splitter для разделения панелей (позволяет изменять размеры)
         main_splitter = QSplitter(Qt.Horizontal)
+        # Настраиваем splitter для удобного изменения размеров
+        main_splitter.setHandleWidth(8)  # Увеличенная ширина разделителя для легкого захвата (16px)
+        main_splitter.setChildrenCollapsible(False)  # Не позволяем полностью скрывать панели
+        main_splitter.setOpaqueResize(True)  # Показываем изменения размеров в реальном времени
+        # Добавляем стиль для более заметного разделителя
+
         
         # Левая панель с настройками
         left_widget = QWidget()
@@ -83,10 +92,15 @@ class MainWindow(QMainWindow):
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        # Устанавливаем минимальную ширину для левой панели (чтобы кнопки и элементы не обрезались)
+        scroll_area.setMinimumWidth(340)  # Увеличено для комфортного отображения кнопок и элементов
+        # Также устанавливаем минимальную ширину для самого виджета
+        left_widget.setMinimumWidth(320)  # Минимальная ширина для внутреннего виджета
         
         # панель инструментов
         tools_group = QGroupBox("Инструменты")
         tools_layout = QVBoxLayout()
+        tools_layout.setSpacing(8)  # Уменьшаем отступы между элементами для более компактного вида
         
         # Выбор типа примитива
         primitive_layout = QHBoxLayout()
@@ -153,9 +167,11 @@ class MainWindow(QMainWindow):
         self.circle_method_widget.hide()
         tools_layout.addWidget(self.circle_method_widget)
         
-        # Выбор метода создания дуги (скрыто по умолчанию)
+        # Выбор метода создания дуги (скрыто по умолчанию) - более компактно
         arc_method_layout = QHBoxLayout()
-        arc_method_layout.addWidget(QLabel("Способ создания:"))
+        arc_label = QLabel("Способ:")
+        arc_label.setMinimumWidth(70)
+        arc_method_layout.addWidget(arc_label)
         self.arc_method_combo = QComboBox()
         self.arc_method_combo.addItems([
             "Три точки (начало, вторая точка, конец)",
@@ -168,9 +184,11 @@ class MainWindow(QMainWindow):
         self.arc_method_widget.hide()
         tools_layout.addWidget(self.arc_method_widget)
         
-        # Выбор метода создания прямоугольника (скрыто по умолчанию)
+        # Выбор метода создания прямоугольника (скрыто по умолчанию) - более компактно
         rectangle_method_layout = QHBoxLayout()
-        rectangle_method_layout.addWidget(QLabel("Способ создания:"))
+        rectangle_label = QLabel("Способ:")
+        rectangle_label.setMinimumWidth(70)
+        rectangle_method_layout.addWidget(rectangle_label)
         self.rectangle_method_combo = QComboBox()
         self.rectangle_method_combo.addItems([
             "Две противоположные точки",
@@ -185,9 +203,11 @@ class MainWindow(QMainWindow):
         self.rectangle_method_widget.hide()
         tools_layout.addWidget(self.rectangle_method_widget)
         
-        # Выбор метода создания эллипса (скрыто по умолчанию)
+        # Выбор метода создания эллипса (скрыто по умолчанию) - более компактно
         ellipse_method_layout = QHBoxLayout()
-        ellipse_method_layout.addWidget(QLabel("Способ создания:"))
+        ellipse_label = QLabel("Способ:")
+        ellipse_label.setMinimumWidth(70)
+        ellipse_method_layout.addWidget(ellipse_label)
         self.ellipse_method_combo = QComboBox()
         self.ellipse_method_combo.addItems([
             "Центр и радиусы",
@@ -200,19 +220,30 @@ class MainWindow(QMainWindow):
         self.ellipse_method_widget.hide()
         tools_layout.addWidget(self.ellipse_method_widget)
 
-        self.delete_last_btn = QPushButton("Удалить последний")
+        # Кнопки удаления в одну строку для экономии места
+        delete_buttons_layout = QHBoxLayout()
+        
+        self.delete_last_btn = QPushButton("Последний")
+        self.delete_last_btn.setToolTip("Удалить последний объект")
         self.delete_last_btn.clicked.connect(self.delete_last_line)
 
-        self.delete_all_btn = QPushButton("Удалить все")
+        self.delete_all_btn = QPushButton("Все")
+        self.delete_all_btn.setToolTip("Удалить все объекты")
         self.delete_all_btn.clicked.connect(self.delete_all_lines)
         
-        self.delete_selected_btn = QPushButton("Удалить выбранное")
+        self.delete_selected_btn = QPushButton("Выбранное")
+        self.delete_selected_btn.setToolTip("Удалить выбранные объекты")
         self.delete_selected_btn.clicked.connect(self.delete_selected_objects)
         self.delete_selected_btn.setEnabled(False)  # По умолчанию отключена, пока нет выделения
 
-        tools_layout.addWidget(self.delete_last_btn)
-        tools_layout.addWidget(self.delete_all_btn)
-        tools_layout.addWidget(self.delete_selected_btn)
+        delete_buttons_layout.addWidget(self.delete_last_btn)
+        delete_buttons_layout.addWidget(self.delete_all_btn)
+        delete_buttons_layout.addWidget(self.delete_selected_btn)
+        
+        # Добавляем метку для кнопок удаления
+        delete_label = QLabel("Удалить:")
+        tools_layout.addWidget(delete_label)
+        tools_layout.addLayout(delete_buttons_layout)
         
         # Группы для сплайна (добавляем в tools_group, чтобы не скрывалась с input_group)
         self.spline_control_points_group = QWidget()
@@ -229,31 +260,45 @@ class MainWindow(QMainWindow):
         
         # панель ввода координат
         self.input_group = QGroupBox("Ввод координат")
-        input_layout = QGridLayout()
+        input_layout = QVBoxLayout()  # Изменяем на вертикальный layout
+        input_layout.setSpacing(10)
         
         # начальная точка (всегда в декартовых координатах)
+        start_point_group = QWidget()
+        start_point_layout = QVBoxLayout()  # Вертикальный layout для начальной точки
+        start_point_layout.setSpacing(5)
         self.start_point_label_widget = QLabel("Начальная точка (x, y):")
-        input_layout.addWidget(self.start_point_label_widget, 0, 0)
+        start_point_layout.addWidget(self.start_point_label_widget)
+        
+        # Горизонтальный layout для полей x и y
+        start_fields_layout = QHBoxLayout()
+        start_fields_layout.addWidget(QLabel("x:"))
         self.start_x_spin = QDoubleSpinBox()
         self.start_x_spin.setRange(-1000, 1000)
         self.start_x_spin.setDecimals(2)
         self.start_x_spin.setSingleStep(10)
         self.start_x_spin.valueChanged.connect(self.on_start_coordinates_changed)
+        start_fields_layout.addWidget(self.start_x_spin)
         
+        start_fields_layout.addWidget(QLabel("y:"))
         self.start_y_spin = QDoubleSpinBox()
         self.start_y_spin.setRange(-1000, 1000)
         self.start_y_spin.setDecimals(2)
         self.start_y_spin.setSingleStep(10)
         self.start_y_spin.valueChanged.connect(self.on_start_coordinates_changed)
+        start_fields_layout.addWidget(self.start_y_spin)
+        start_fields_layout.addStretch()  # Добавляем растяжение справа
         
-        input_layout.addWidget(QLabel("x:"), 0, 1)
-        input_layout.addWidget(self.start_x_spin, 0, 2)
-        input_layout.addWidget(QLabel("y:"), 0, 3)
-        input_layout.addWidget(self.start_y_spin, 0, 4)
+        start_point_layout.addLayout(start_fields_layout)
+        start_point_group.setLayout(start_point_layout)
+        input_layout.addWidget(start_point_group)
         
         # конечная точка (зависит от системы координат)
+        end_point_group = QWidget()
+        end_point_layout = QVBoxLayout()  # Вертикальный layout для конечной точки
+        end_point_layout.setSpacing(5)
         self.end_point_label_widget = QLabel("Конечная точка:")
-        input_layout.addWidget(self.end_point_label_widget, 1, 0)
+        end_point_layout.addWidget(self.end_point_label_widget)
         
         # декартовы координаты
         self.cartesian_group = QWidget()
@@ -274,7 +319,10 @@ class MainWindow(QMainWindow):
         cartesian_layout.addWidget(self.end_x_spin)
         cartesian_layout.addWidget(QLabel("y:"))
         cartesian_layout.addWidget(self.end_y_spin)
+        cartesian_layout.addStretch()  # Добавляем растяжение справа
         self.cartesian_group.setLayout(cartesian_layout)
+        
+        end_point_layout.addWidget(self.cartesian_group)
         
         # полярные координаты
         self.polar_group = QWidget()
@@ -298,8 +346,13 @@ class MainWindow(QMainWindow):
         polar_layout.addWidget(QLabel("θ:"))
         polar_layout.addWidget(self.angle_spin)
         polar_layout.addWidget(self.angle_label)
+        polar_layout.addStretch()  # Добавляем растяжение справа
         self.polar_group.setLayout(polar_layout)
         self.polar_group.hide()
+        
+        end_point_layout.addWidget(self.polar_group)
+        end_point_group.setLayout(end_point_layout)
+        input_layout.addWidget(end_point_group)
         
         # Группы для окружности
         # Центр и радиус
@@ -460,16 +513,13 @@ class MainWindow(QMainWindow):
         self.arc_center_angles_group.setLayout(arc_ca_layout)
         self.arc_center_angles_group.hide()
         
-        # Добавляем все виджеты в одну ячейку GridLayout
-        # Они будут показываться/скрываться по необходимости
-        input_layout.addWidget(self.cartesian_group, 1, 1, 1, 4)
-        input_layout.addWidget(self.polar_group, 1, 1, 1, 4)
-        input_layout.addWidget(self.circle_center_radius_group, 1, 1, 1, 4)
-        input_layout.addWidget(self.circle_center_diameter_group, 1, 1, 1, 4)
-        input_layout.addWidget(self.circle_two_points_group, 1, 1, 1, 4)
-        input_layout.addWidget(self.circle_three_points_group, 1, 1, 2, 4)
-        input_layout.addWidget(self.arc_three_points_group, 1, 1, 2, 4)
-        input_layout.addWidget(self.arc_center_angles_group, 1, 1, 3, 4)
+        # Остальные виджеты добавляются в input_layout (они будут показываться/скрываться по необходимости)
+        input_layout.addWidget(self.circle_center_radius_group)
+        input_layout.addWidget(self.circle_center_diameter_group)
+        input_layout.addWidget(self.circle_two_points_group)
+        input_layout.addWidget(self.circle_three_points_group)
+        input_layout.addWidget(self.arc_three_points_group)
+        input_layout.addWidget(self.arc_center_angles_group)
         
         # Группы для прямоугольника
         # Две противоположные точки (используем существующие поля end_x_spin и end_y_spin)
@@ -533,11 +583,10 @@ class MainWindow(QMainWindow):
         self.rectangle_fillets_group.setLayout(rect_fill_layout)
         self.rectangle_fillets_group.hide()
         
-        # Добавляем группы прямоугольника в GridLayout
-        input_layout.addWidget(self.rectangle_point_size_group, 1, 1, 2, 4)
-        input_layout.addWidget(self.rectangle_center_size_group, 1, 1, 2, 4)
-        # rectangle_fillets_group размещаем на следующей строке после cartesian_group/polar_group
-        input_layout.addWidget(self.rectangle_fillets_group, 2, 1, 1, 4)
+        # Добавляем группы прямоугольника в input_layout
+        input_layout.addWidget(self.rectangle_point_size_group)
+        input_layout.addWidget(self.rectangle_center_size_group)
+        input_layout.addWidget(self.rectangle_fillets_group)
         
         # Группы для эллипса
         # Центр и радиусы
@@ -600,8 +649,8 @@ class MainWindow(QMainWindow):
         self.ellipse_three_points_group.setLayout(ellipse_3p_layout)
         self.ellipse_three_points_group.hide()
         
-        input_layout.addWidget(self.ellipse_center_radii_group, 1, 1, 2, 4)
-        input_layout.addWidget(self.ellipse_three_points_group, 1, 1, 2, 4)
+        input_layout.addWidget(self.ellipse_center_radii_group)
+        input_layout.addWidget(self.ellipse_three_points_group)
         
         # Группы для многоугольника
         # Способ создания
@@ -617,7 +666,7 @@ class MainWindow(QMainWindow):
         polygon_method_layout.addWidget(self.polygon_method_combo)
         self.polygon_method_group.setLayout(polygon_method_layout)
         self.polygon_method_group.hide()
-        input_layout.addWidget(self.polygon_method_group, 1, 0, 1, 5)
+        input_layout.addWidget(self.polygon_method_group)
         
         # Центр, радиус и количество углов
         self.polygon_center_radius_vertices_group = QWidget()
@@ -640,14 +689,12 @@ class MainWindow(QMainWindow):
         self.polygon_center_radius_vertices_group.setLayout(polygon_crv_layout)
         self.polygon_center_radius_vertices_group.hide()
         
-        input_layout.addWidget(self.polygon_center_radius_vertices_group, 2, 0, 1, 5)
+        input_layout.addWidget(self.polygon_center_radius_vertices_group)
         
         # кнопка применения координат
-        # Размещаем кнопку после всех возможных виджетов (строка 4 или больше)
-        # Максимальный rowSpan = 3 (arc_center_angles_group), поэтому кнопка на строке 4
         self.apply_coords_btn = QPushButton("Применить координаты")
         self.apply_coords_btn.clicked.connect(self.apply_coordinates)
-        input_layout.addWidget(self.apply_coords_btn, 5, 0, 1, 5)
+        input_layout.addWidget(self.apply_coords_btn)
         
         self.input_group.setLayout(input_layout)
         left_panel.addWidget(self.input_group)
@@ -709,12 +756,16 @@ class MainWindow(QMainWindow):
         
         left_panel.addStretch()
         
-        # правая часть с рабочей областью и информацией
-        right_widget = QWidget()
-        right_panel = QVBoxLayout(right_widget)
+        # правая часть с рабочей областью и информацией (используем вертикальный splitter для изменения размеров)
+        right_splitter = QSplitter(Qt.Vertical)
+        right_splitter.setHandleWidth(8)  # Увеличенная ширина разделителя для легкого захвата (16px)
+        right_splitter.setChildrenCollapsible(False)  # Не позволяем полностью скрывать панели
+        right_splitter.setOpaqueResize(True)  # Показываем изменения размеров в реальном времени
+        # Добавляем стиль для более заметного разделителя
+
         
         # рабочая область
-        right_panel.addWidget(self.canvas)
+        right_splitter.addWidget(self.canvas)
         
         # информационная панель
         info_group = QGroupBox("Информация об объекте")
@@ -742,13 +793,34 @@ class MainWindow(QMainWindow):
         info_layout.addWidget(self.info_value4, 3, 1)
         
         info_group.setLayout(info_layout)
-        right_panel.addWidget(info_group)
+        # Устанавливаем минимальную высоту для информационной панели
+        info_group.setMinimumHeight(150)
+        right_splitter.addWidget(info_group)
+        
+        # Устанавливаем пропорции: рабочая область - 4 части, информационная панель - 1 часть
+        right_splitter.setStretchFactor(0, 4)
+        right_splitter.setStretchFactor(1, 1)
+        # Устанавливаем начальные размеры: рабочая область - большая часть, информационная панель - меньшая
+        right_splitter.setSizes([800, 200])
         
         # Добавляем виджеты в splitter
         main_splitter.addWidget(scroll_area)
-        main_splitter.addWidget(right_widget)
-        main_splitter.setStretchFactor(0, 1)
-        main_splitter.setStretchFactor(1, 3)
+        main_splitter.addWidget(right_splitter)  # Используем вертикальный splitter для правой части
+        
+        # Устанавливаем политику размеров для виджетов в splitter
+        # Это позволяет им изменяться при изменении размера окна
+        scroll_area.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        right_splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
+        # Устанавливаем начальные размеры: левая панель - 400px, правая - остальное
+        main_splitter.setSizes([400, 1200])
+        # Устанавливаем минимальную ширину для левой панели
+        main_splitter.setCollapsible(0, False)  # Запрещаем полностью скрывать левую панель
+        
+        # Используем stretch factors для правильного распределения пространства при изменении размера окна
+        # Но с небольшими значениями, чтобы splitter оставался гибким
+        main_splitter.setStretchFactor(0, 0)  # Левая панель не растягивается автоматически
+        main_splitter.setStretchFactor(1, 1)  # Правая панель растягивается при изменении размера окна
         
         main_layout.addWidget(main_splitter)
         
@@ -881,7 +953,7 @@ class MainWindow(QMainWindow):
         self.addToolBar(toolbar)
         
         # инструмент "Рука" для панорамирования
-        self.pan_action = QAction("🖑", self)
+        self.pan_action = QAction("✋", self)
         self.pan_action.setCheckable(True)
         self.pan_action.setToolTip("Панорамирование (Пробел)")
         self.pan_action.setShortcut(Qt.Key_Space)
@@ -891,40 +963,44 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         
         # увеличение
-        zoom_in_action = QAction("🞢", self)
-        zoom_in_action.setToolTip("Увеличить")
+        zoom_in_action = QAction("➕", self)  # Плюс в квадрате - стандартный символ увеличения
+        zoom_in_action.setToolTip("Увеличить (Ctrl++)")
+        zoom_in_action.setShortcut(QKeySequence.ZoomIn)
         zoom_in_action.triggered.connect(self.canvas.zoom_in)
         toolbar.addAction(zoom_in_action)
         
         # уменьшение
-        zoom_out_action = QAction("‒", self)
-        zoom_out_action.setToolTip("Уменьшить")
+        zoom_out_action = QAction("➖", self)  # Минус в квадрате - стандартный символ уменьшения
+        zoom_out_action.setToolTip("Уменьшить (Ctrl+-)")
+        zoom_out_action.setShortcut(QKeySequence.ZoomOut)
         zoom_out_action.triggered.connect(self.canvas.zoom_out)
         toolbar.addAction(zoom_out_action)
         
         # показать всё сохраняя поворот
-        show_all_action = QAction("ⓘ", self)
+        show_all_action = QAction("⊞", self)  # Квадрат с четырьмя стрелками - стандартный символ для "показать всё"
         show_all_action.setToolTip("Показать всё (сохранить поворот)")
         show_all_action.triggered.connect(self.canvas.show_all)
         toolbar.addAction(show_all_action)
         
         toolbar.addSeparator()
         
-        # поворот налево
-        rotate_left_action = QAction("↶", self)
-        rotate_left_action.setToolTip("Повернуть налево")
+        # поворот налево (против часовой стрелки)
+        rotate_left_action = QAction("↺", self)
+        rotate_left_action.setToolTip("Повернуть налево (Ctrl+Left)")
+        rotate_left_action.setShortcut("Ctrl+Left")
         rotate_left_action.triggered.connect(self.rotate_left)
         toolbar.addAction(rotate_left_action)
         
-        # поворот направо
-        rotate_right_action = QAction("↷", self)
-        rotate_right_action.setToolTip("Повернуть направо")
+        # поворот направо (по часовой стрелке)
+        rotate_right_action = QAction("↻", self)
+        rotate_right_action.setToolTip("Повернуть направо (Ctrl+Right)")
+        rotate_right_action.setShortcut("Ctrl+Right")
         rotate_right_action.triggered.connect(self.rotate_right)
         toolbar.addAction(rotate_right_action)
         
         # сброс вида
-        reset_view_action = QAction("⟲", self)
-        reset_view_action.setToolTip("Сбросить вид")
+        reset_view_action = QAction("↶", self)  # Стрелка поворота влево - символ сброса/возврата
+        reset_view_action.setToolTip("Сбросить вид (Ctrl+R)")
         reset_view_action.triggered.connect(self.canvas.reset_view)
         toolbar.addAction(reset_view_action)
         
