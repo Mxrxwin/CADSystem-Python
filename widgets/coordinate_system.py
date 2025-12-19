@@ -5,7 +5,7 @@
 import math
 from PySide6.QtWidgets import QWidget, QMenu
 from PySide6.QtCore import Qt, QPointF, QPoint, Signal, QTimer
-from PySide6.QtGui import QPainter, QPen, QColor, QTransform
+from PySide6.QtGui import QPainter, QPen, QColor, QTransform, QKeyEvent
 
 from core.viewport import Viewport
 from core.scene import Scene
@@ -93,6 +93,7 @@ class CoordinateSystemWidget(QWidget):
         self.setMinimumSize(600, 400)
         self.setMouseTracking(True)
         self.setContextMenuPolicy(Qt.NoContextMenu)
+        self.setFocusPolicy(Qt.StrongFocus)  # Для получения событий клавиатуры
     
     def set_editing_mode(self, enabled, edit_dialog=None):
         """Устанавливает режим редактирования (перемещение точек)"""
@@ -1059,6 +1060,8 @@ class CoordinateSystemWidget(QWidget):
                         pass
                     self.scene.start_drawing(world_pos, drawing_type=self.primitive_type,
                                             style=style, color=self.line_color, width=self.line_width, **kwargs)
+                    # Устанавливаем фокус для получения событий клавиатуры (например, ESC для отмены)
+                    self.setFocus()
                     # Эмитируем сигнал о начале рисования прямоугольника (после start_drawing)
                     if self.primitive_type == 'rectangle':
                         self.rectangle_drawing_started.emit(self.rectangle_creation_method)
@@ -1908,6 +1911,18 @@ class CoordinateSystemWidget(QWidget):
         self.view_changed.emit()
         self.update()
     
+    def keyPressEvent(self, event: QKeyEvent):
+        """Обработчик нажатия клавиш"""
+        if event.key() == Qt.Key.Key_Escape:
+            # Отменяем рисование, если оно активно
+            if self.scene.is_drawing():
+                self.scene.cancel_drawing()
+                self.update()
+                return
+        
+        # Передаем событие базовому классу для стандартной обработки
+        super().keyPressEvent(event)
+    
     def set_pan_mode(self, enabled):
         """Устанавливает режим панорамирования"""
         self.pan_mode = enabled
@@ -2114,6 +2129,8 @@ class CoordinateSystemWidget(QWidget):
             if not self.scene.is_drawing():
                 self.scene.start_drawing(start_point, drawing_type='line', style=style,
                                        color=self.line_color, width=self.line_width)
+                # Устанавливаем фокус для получения событий клавиатуры (например, ESC для отмены)
+                self.setFocus()
                 current_obj = self.scene.get_current_object()
                 if current_obj:
                     self.scene.update_current_object(end_point)
