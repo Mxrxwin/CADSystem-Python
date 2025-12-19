@@ -48,10 +48,13 @@ class MainWindow(QMainWindow):
         # Отслеживаем закрытие диалога для обновления информации
         self.edit_dialog.finished.connect(self.on_edit_dialog_closed)
         
-        # Явно вызываем change_primitive_type для показа виджета способа задания отрезка
-        # (поскольку "Отрезок" выбран по умолчанию, сигнал currentTextChanged не сработает)
-        if hasattr(self, 'primitive_combo'):
-            self.change_primitive_type(self.primitive_combo.currentText())
+        # Не выбираем примитив по умолчанию - панель настроек будет скрыта
+        # Пользователь должен выбрать примитив вручную, чтобы панель появилась
+        # Устанавливаем тип по умолчанию в canvas, но не показываем панель
+        if hasattr(self.canvas, 'set_primitive_type'):
+            self.canvas.set_primitive_type('line')  # Устанавливаем по умолчанию, но панель скрыта
+        if hasattr(self.canvas, 'primitive_type'):
+            self.canvas.primitive_type = 'line'
         self.update_info()
     
     def init_ui(self):
@@ -78,13 +81,65 @@ class MainWindow(QMainWindow):
         main_splitter.setHandleWidth(8)  # Увеличенная ширина разделителя для легкого захвата (16px)
         main_splitter.setChildrenCollapsible(False)  # Не позволяем полностью скрывать панели
         main_splitter.setOpaqueResize(True)  # Показываем изменения размеров в реальном времени
-        # Добавляем стиль для более заметного разделителя
-
+        # Левая вертикальная панель выбора примитивов (как в Photoshop)
+        primitive_toolbar = QWidget()
+        primitive_toolbar_layout = QVBoxLayout(primitive_toolbar)
+        primitive_toolbar_layout.setSpacing(5)
+        primitive_toolbar_layout.setContentsMargins(5, 5, 5, 5)
+        primitive_toolbar.setMinimumWidth(60)  # Узкая панель для кнопок
+        primitive_toolbar.setMaximumWidth(80)
         
-        # Левая панель с настройками
+        # Создаем кнопки-инструменты для каждого примитива
+        primitives = ["Отрезок", "Окружность", "Дуга", "Прямоугольник", "Эллипс", "Многоугольник", "Сплайн"]
+        self.primitive_buttons = []
+        
+        for primitive in primitives:
+            icon = self._create_primitive_icon(primitive)
+            btn = QPushButton()
+            btn.setIcon(icon)
+            btn.setIconSize(QSize(32, 32))
+            btn.setCheckable(True)
+            btn.setToolTip(primitive)
+            btn.setFixedSize(50, 50)
+            # Связываем нажатие с выбором примитива (используем правильный захват переменной)
+            def make_handler(prim):
+                def handler(checked):
+                    # Если кнопка была нажата (checked=True), выбираем примитив
+                    if checked:
+                        self.change_primitive_type(prim)
+                    else:
+                        # Если сняли выбор, проверяем, есть ли еще выбранные примитивы
+                        any_checked = any(b.isChecked() for b in self.primitive_buttons)
+                        if not any_checked:
+                            # Если ни один примитив не выбран, скрываем панель настроек
+                            if hasattr(self, 'scroll_area'):
+                                self.scroll_area.hide()
+                return handler
+            btn.clicked.connect(make_handler(primitive))
+            primitive_toolbar_layout.addWidget(btn)
+            self.primitive_buttons.append(btn)
+        
+        primitive_toolbar_layout.addStretch()
+        primitive_toolbar.setStyleSheet("""
+            QPushButton {
+                border: 1px solid #ccc;
+                border-radius: 3px;
+                background-color: #f0f0f0;
+            }
+            QPushButton:hover {
+                background-color: #e0e0e0;
+            }
+            QPushButton:checked {
+                background-color: #d0d0d0;
+                border: 2px solid #0078d4;
+            }
+        """)
+        
+        # Основная левая панель с настройками (скрыта по умолчанию)
         left_widget = QWidget()
         left_panel = QVBoxLayout(left_widget)
         left_panel.setSpacing(10)
+        left_panel.setContentsMargins(0, 0, 0, 0)  # Убираем отступы по краям
         
         # Обёртка в скролл для левой панели
         scroll_area = QScrollArea()
@@ -96,29 +151,37 @@ class MainWindow(QMainWindow):
         scroll_area.setMinimumWidth(340)  # Увеличено для комфортного отображения кнопок и элементов
         # Также устанавливаем минимальную ширину для самого виджета
         left_widget.setMinimumWidth(320)  # Минимальная ширина для внутреннего виджета
+        scroll_area.hide()  # Скрываем по умолчанию, показывается после выбора примитива
         
-        # панель инструментов
-        tools_group = QGroupBox("Инструменты")
-        tools_layout = QVBoxLayout()
-        tools_layout.setSpacing(8)  # Уменьшаем отступы между элементами для более компактного вида
-        
-        # Выбор типа примитива
-        primitive_layout = QHBoxLayout()
-        primitive_layout.addWidget(QLabel("Тип примитива:"))
+        # Создаем комбобокс для совместимости (скрытый, используется внутренне)
         self.primitive_combo = QComboBox()
-        
         # Добавляем примитивы с иконками
-        primitives = ["Отрезок", "Окружность", "Дуга", "Прямоугольник", "Эллипс", "Многоугольник", "Сплайн"]
         for primitive in primitives:
             icon = self._create_primitive_icon(primitive)
             self.primitive_combo.addItem(icon, primitive)
         
         self.primitive_combo.currentTextChanged.connect(self.change_primitive_type)
-        primitive_layout.addWidget(self.primitive_combo)
-        tools_layout.addLayout(primitive_layout)
+        
+        # Создаем splitter для левой части (панель инструментов + блок настроек)
+        left_splitter = QSplitter(Qt.Horizontal)
+        left_splitter.setHandleWidth(8)
+        left_splitter.setChildrenCollapsible(False)
+        left_splitter.setOpaqueResize(True)
+        left_splitter.addWidget(primitive_toolbar)
+        left_splitter.addWidget(scroll_area)
+        left_splitter.setSizes([70, 400])  # Панель инструментов узкая, блок настроек шире
+        left_splitter.setCollapsible(0, False)
+        left_splitter.setCollapsible(1, False)
+        
+        # панель инструментов (скрыта по умолчанию, показывается после выбора примитива)
+        tools_group = QGroupBox("Инструменты")
+        tools_layout = QVBoxLayout()
+        tools_layout.setSpacing(4)  # Уменьшаем отступы между элементами для более компактного вида
+        tools_layout.setContentsMargins(5, 5, 5, 5)  # Минимальные отступы внутри группы
         
         # Выбор способа задания отрезка (скрыто по умолчанию)
         line_method_layout = QVBoxLayout()
+        line_method_layout.setContentsMargins(0, 0, 0, 0)  # Убираем отступы
         line_method_layout.addWidget(QLabel("Способ задания:"))
         self.line_method_combo = QComboBox()
         self.line_method_combo.addItems([
@@ -130,6 +193,7 @@ class MainWindow(QMainWindow):
         
         # Система координат и единицы углов для отрезка
         line_coord_layout = QHBoxLayout()
+        line_coord_layout.setContentsMargins(0, 0, 0, 0)  # Убираем отступы
         line_coord_layout.addWidget(QLabel("Система координат:"))
         self.line_coord_combo = QComboBox()
         self.line_coord_combo.addItems(["Декартова", "Полярная"])
@@ -138,6 +202,7 @@ class MainWindow(QMainWindow):
         line_method_layout.addLayout(line_coord_layout)
         
         line_angle_layout = QHBoxLayout()
+        line_angle_layout.setContentsMargins(0, 0, 0, 0)  # Убираем отступы
         line_angle_layout.addWidget(QLabel("Единицы углов:"))
         self.line_angle_combo = QComboBox()
         self.line_angle_combo.addItems(["Градусы", "Радианы"])
@@ -267,11 +332,13 @@ class MainWindow(QMainWindow):
         start_point_group = QWidget()
         start_point_layout = QVBoxLayout()  # Вертикальный layout для начальной точки
         start_point_layout.setSpacing(5)
+        start_point_layout.setContentsMargins(0, 0, 0, 0)  # Убираем отступы
         self.start_point_label_widget = QLabel("Начальная точка (x, y):")
         start_point_layout.addWidget(self.start_point_label_widget)
         
         # Горизонтальный layout для полей x и y
         start_fields_layout = QHBoxLayout()
+        start_fields_layout.setContentsMargins(0, 0, 0, 0)  # Убираем отступы
         start_fields_layout.addWidget(QLabel("x:"))
         self.start_x_spin = QDoubleSpinBox()
         self.start_x_spin.setRange(-1000, 1000)
@@ -297,12 +364,14 @@ class MainWindow(QMainWindow):
         end_point_group = QWidget()
         end_point_layout = QVBoxLayout()  # Вертикальный layout для конечной точки
         end_point_layout.setSpacing(5)
+        end_point_layout.setContentsMargins(0, 0, 0, 0)  # Убираем отступы
         self.end_point_label_widget = QLabel("Конечная точка:")
         end_point_layout.addWidget(self.end_point_label_widget)
         
         # декартовы координаты
         self.cartesian_group = QWidget()
         cartesian_layout = QHBoxLayout()
+        cartesian_layout.setContentsMargins(0, 0, 0, 0)  # Убираем отступы
         self.end_x_spin = QDoubleSpinBox()
         self.end_x_spin.setRange(-1000, 1000)
         self.end_x_spin.setDecimals(2)
@@ -327,6 +396,7 @@ class MainWindow(QMainWindow):
         # полярные координаты
         self.polar_group = QWidget()
         polar_layout = QHBoxLayout()
+        polar_layout.setContentsMargins(0, 0, 0, 0)  # Убираем отступы
         self.radius_spin = QDoubleSpinBox()
         self.radius_spin.setRange(0, 1000)
         self.radius_spin.setDecimals(2)
@@ -697,6 +767,7 @@ class MainWindow(QMainWindow):
         input_layout.addWidget(self.apply_coords_btn)
         
         self.input_group.setLayout(input_layout)
+        self.input_group.hide()  # Скрываем по умолчанию, показывается после выбора примитива
         left_panel.addWidget(self.input_group)
         
         # панель настроек
@@ -803,14 +874,18 @@ class MainWindow(QMainWindow):
         # Устанавливаем начальные размеры: рабочая область - большая часть, информационная панель - меньшая
         right_splitter.setSizes([800, 200])
         
-        # Добавляем виджеты в splitter
-        main_splitter.addWidget(scroll_area)
+        # Добавляем виджеты в splitter (левая часть уже содержит панель инструментов и блок настроек)
+        main_splitter.addWidget(left_splitter)
         main_splitter.addWidget(right_splitter)  # Используем вертикальный splitter для правой части
+        
+        # Сохраняем ссылку на scroll_area для управления видимостью
+        self.scroll_area = scroll_area
         
         # Устанавливаем политику размеров для виджетов в splitter
         # Это позволяет им изменяться при изменении размера окна
         scroll_area.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         right_splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        left_splitter.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         
         # Устанавливаем начальные размеры: левая панель - 400px, правая - остальное
         main_splitter.setSizes([400, 1200])
@@ -1763,7 +1838,31 @@ class MainWindow(QMainWindow):
             "Сплайн": "spline"
         }
         primitive_type = primitive_map.get(primitive_name, "line")
-        self.canvas.set_primitive_type(primitive_type)
+        # Устанавливаем тип примитива в canvas
+        if hasattr(self.canvas, 'set_primitive_type'):
+            self.canvas.set_primitive_type(primitive_type)
+        # Также устанавливаем напрямую для гарантии
+        if hasattr(self.canvas, 'primitive_type'):
+            self.canvas.primitive_type = primitive_type
+        
+        # Обновляем состояние кнопок (снимаем выделение со всех, затем выделяем нужную)
+        for btn in self.primitive_buttons:
+            btn.blockSignals(True)  # Блокируем сигналы, чтобы не вызвать рекурсию
+            btn.setChecked(btn.toolTip() == primitive_name)
+            btn.blockSignals(False)
+        
+        # Обновляем комбобокс для совместимости
+        self.primitive_combo.blockSignals(True)
+        self.primitive_combo.setCurrentText(primitive_name)
+        self.primitive_combo.blockSignals(False)
+        
+        # Показываем блок настроек после выбора примитива (остается видимым после первого показа)
+        if hasattr(self, 'scroll_area'):
+            self.scroll_area.show()  # Всегда показываем, если был выбран примитив
+        if hasattr(self, 'input_group') and hasattr(self, 'tools_group'):
+            # Для обратной совместимости
+            self.tools_group.show()
+            self.input_group.show()
         
         # Очищаем точки ввода при смене типа примитива
         self.canvas.clear_input_points()
