@@ -6,8 +6,25 @@ from PySide6.QtCore import QObject, Signal, Qt
 from PySide6.QtGui import QPen, QColor
 
 
+def normalize_line_type(value):
+    if isinstance(value, LineType):
+        return value
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    for line_type in LineType:
+        if text == line_type.value or text.upper() == line_type.name:
+            return line_type
+    return value
+
+
 class LineType(Enum):
     """Типы линий согласно ГОСТ 2.303-68"""
+    BY_LAYER = "by_layer"  # По слою
     SOLID_MAIN = "solid_main"  # Сплошная основная
     SOLID_THIN = "solid_thin"  # Сплошная тонкая
     SOLID_WAVY = "solid_wavy"  # Сплошная волнистая
@@ -16,6 +33,21 @@ class LineType(Enum):
     DASH_DOT_THIN = "dash_dot_thin"  # Штрихпунктирная тонкая
     DASH_DOT_TWO_DOTS = "dash_dot_two_dots"  # Штрихпунктирная с двумя точками
     SOLID_THIN_BROKEN = "solid_thin_broken"  # Сплошная тонкая с изломами
+
+    @property
+    def display_name(self) -> str:
+        labels = {
+            LineType.BY_LAYER: "По слою",
+            LineType.SOLID_MAIN: "Сплошная основная",
+            LineType.SOLID_THIN: "Сплошная тонкая",
+            LineType.SOLID_WAVY: "Сплошная волнистая",
+            LineType.DASHED: "Штриховая",
+            LineType.DASH_DOT_THICK: "Штрихпунктирная утолщенная",
+            LineType.DASH_DOT_THIN: "Штрихпунктирная тонкая",
+            LineType.DASH_DOT_TWO_DOTS: "Штрихпунктирная с двумя точками",
+            LineType.SOLID_THIN_BROKEN: "Сплошная тонкая с изломами",
+        }
+        return labels.get(self, self.name)
 
 
 class LineStyle(QObject):
@@ -27,7 +59,7 @@ class LineStyle(QObject):
                  wavy_amplitude_mm=None, parent=None):
         super().__init__(parent)
         self._name = name
-        self._line_type = line_type
+        self._line_type = normalize_line_type(line_type)
         self._thickness_mm = thickness_mm  # Толщина в миллиметрах
         self._dash_length = dash_length  # Длина штриха
         self._dash_gap = dash_gap  # Расстояние между штрихами
@@ -65,6 +97,7 @@ class LineStyle(QObject):
     
     @line_type.setter
     def line_type(self, value):
+        value = normalize_line_type(value)
         if value != self._line_type:
             self._line_type = value
             self.style_changed.emit()
@@ -186,7 +219,7 @@ class LineStyle(QObject):
             if hasattr(obj, 'on_style_changed'):
                 obj.on_style_changed()
     
-    def get_pen(self, scale_factor=1.0, dpi=96):
+    def get_pen(self, scale_factor=1.0, dpi=96, line_type_override=None):
         """
         Создает QPen для отрисовки линии
         Толщина линии не зависит от масштаба (в пикселях экрана)
@@ -195,28 +228,33 @@ class LineStyle(QObject):
         """
         # Конвертируем миллиметры в пиксели для толщины (независимо от масштаба)
         thickness_px = (self._thickness_mm * dpi) / 25.4
+        effective_line_type = normalize_line_type(line_type_override) or self._line_type
         
         pen = QPen(self._color, thickness_px)
+        pen.setJoinStyle(Qt.MiterJoin)
         
         # Настраиваем тип линии
-        if self._line_type == LineType.SOLID_MAIN or self._line_type == LineType.SOLID_THIN:
+        if effective_line_type in (LineType.BY_LAYER, LineType.SOLID_MAIN, LineType.SOLID_THIN):
             pen.setStyle(Qt.SolidLine)
-        elif self._line_type == LineType.SOLID_WAVY:
+        elif effective_line_type == LineType.SOLID_WAVY:
             # Волнистая линия - используем кастомный паттерн
             pen.setStyle(Qt.SolidLine)  # Будет обработано отдельно
-        elif self._line_type == LineType.DASHED:
+        elif effective_line_type == LineType.DASHED:
             # Штриховая: штрих-пробел
             # Теперь рисуется вручную в _draw_dashed_line, поэтому просто сплошная линия
             pen.setStyle(Qt.SolidLine)
-        elif self._line_type == LineType.DASH_DOT_THICK or self._line_type == LineType.DASH_DOT_THIN:
+            pen.setCapStyle(Qt.FlatCap)
+        elif effective_line_type == LineType.DASH_DOT_THICK or effective_line_type == LineType.DASH_DOT_THIN:
             # Штрихпунктирная: штрих-пробел-точка-пробел
             # Теперь рисуется вручную в _draw_dash_dot_line, поэтому просто сплошная линия
             pen.setStyle(Qt.SolidLine)
-        elif self._line_type == LineType.DASH_DOT_TWO_DOTS:
+            pen.setCapStyle(Qt.FlatCap)
+        elif effective_line_type == LineType.DASH_DOT_TWO_DOTS:
             # Штрихпунктирная с двумя точками: штрих-пробел-точка-пробел-точка-пробел
             # Теперь рисуется вручную в _draw_dash_dot_line, поэтому просто сплошная линия
             pen.setStyle(Qt.SolidLine)
-        elif self._line_type == LineType.SOLID_THIN_BROKEN:
+            pen.setCapStyle(Qt.FlatCap)
+        elif effective_line_type == LineType.SOLID_THIN_BROKEN:
             # Сплошная тонкая с изломами - сплошная линия с острыми углами
             # Будет обработано отдельно в методе отрисовки
             pen.setStyle(Qt.SolidLine)
@@ -257,6 +295,7 @@ class LineStyleManager(QObject):
     def _initialize_gost_styles(self):
         """Инициализирует базовые стили ГОСТ 2.303-68"""
         gost_styles = [
+            ("По слою", LineType.BY_LAYER, 0.8),
             ("Сплошная основная", LineType.SOLID_MAIN, 0.8),
             ("Сплошная тонкая", LineType.SOLID_THIN, 0.4),
             ("Сплошная волнистая", LineType.SOLID_WAVY, 0.4),
@@ -356,4 +395,3 @@ class LineStyleManager(QObject):
         
         if self._current_style_id == old_name:
             self._current_style_id = new_name
-

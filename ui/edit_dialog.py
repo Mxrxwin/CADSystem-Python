@@ -4,6 +4,7 @@
 import sys
 import os
 import math
+import copy
 
 # Добавляем корневую директорию проекта в sys.path, если её там нет
 # Это нужно для корректного импорта модулей widgets
@@ -12,12 +13,15 @@ _project_root = os.path.dirname(_current_dir)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
+from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                                QDoubleSpinBox, QComboBox, QPushButton, QGroupBox,
-                               QGridLayout, QWidget, QSpinBox, QMessageBox)
+                               QGridLayout, QWidget, QSpinBox, QMessageBox, QLineEdit,
+                               QColorDialog)
 from PySide6.QtCore import QPointF, Qt, Signal
+from PySide6.QtGui import QColor
 from widgets.line_segment import LineSegment
 from widgets.primitives import Arc, Ellipse, Polygon, Spline
+from widgets.dimensions import LinearDimension, RadialDimension, AngularDimension
 
 
 class EditDialog(QDialog):
@@ -90,7 +94,13 @@ class EditDialog(QDialog):
             return
         
         from widgets.primitives import Circle, Rectangle, Ellipse
-        if isinstance(obj, LineSegment):
+        if isinstance(obj, LinearDimension):
+            self.setup_dimension_editing(obj, "Редактирование линейного размера")
+        elif isinstance(obj, RadialDimension):
+            self.setup_dimension_editing(obj, "Редактирование радиального размера")
+        elif isinstance(obj, AngularDimension):
+            self.setup_dimension_editing(obj, "Редактирование углового размера")
+        elif isinstance(obj, LineSegment):
             self.setup_line_editing(obj)
         elif isinstance(obj, Circle):
             self.setup_circle_editing(obj)
@@ -1586,6 +1596,331 @@ class EditDialog(QDialog):
         if self.canvas:
             self.canvas.update()
     
+    # ─── Размерные линии ──────────────────────────────────────────────────────
+
+    def _capture_dimension_state(self, obj):
+        state = {'text_override': obj.text_override}
+        state['text_position_override'] = QPointF(obj.text_position_override) if obj.text_position_override is not None else None
+        state['style'] = copy.deepcopy(obj.style)
+        if isinstance(obj, LinearDimension):
+            state.update({
+                'start': QPointF(obj.start),
+                'end': QPointF(obj.end),
+                'dimension_type': obj.dimension_type,
+                'offset': obj.offset,
+            })
+        elif isinstance(obj, RadialDimension):
+            state.update({
+                'center': QPointF(obj.center),
+                'radius_point': QPointF(obj.radius_point),
+                'dimension_type': obj.dimension_type,
+                'leader_point': QPointF(obj.leader_point) if obj.leader_point is not None else None,
+            })
+        elif isinstance(obj, AngularDimension):
+            state.update({
+                'vertex': QPointF(obj.vertex),
+                'ray_start': QPointF(obj.ray_start),
+                'ray_end': QPointF(obj.ray_end),
+                'radius': obj.radius,
+            })
+        return state
+
+    def _restore_dimension_state(self, obj, state):
+        obj.text_override = state['text_override']
+        obj.text_position_override = QPointF(state['text_position_override']) if state['text_position_override'] is not None else None
+        obj.style = copy.deepcopy(state['style'])
+        if isinstance(obj, LinearDimension):
+            obj.start = state['start']
+            obj.end = state['end']
+            obj.dimension_type = state['dimension_type']
+            obj.offset = state['offset']
+        elif isinstance(obj, RadialDimension):
+            obj.center = state['center']
+            obj.radius_point = state['radius_point']
+            obj.dimension_type = state['dimension_type']
+            obj.leader_point = QPointF(state['leader_point']) if state['leader_point'] is not None else None
+        elif isinstance(obj, AngularDimension):
+            obj.vertex = state['vertex']
+            obj.ray_start = state['ray_start']
+            obj.ray_end = state['ray_end']
+            obj.radius = state['radius']
+
+    def _block_controls(self, controls, blocked):
+        for control in controls:
+            control.blockSignals(blocked)
+
+    def _update_dimension_labels(self, dimension_obj):
+        self.dimension_auto_value_label.setText(dimension_obj._default_text())
+        self.dimension_display_value_label.setText(dimension_obj.display_text)
+
+    def _dimension_style_controls(self):
+        return [
+            self.dim_ext_line_type_combo,
+            self.dim_line_type_combo,
+            self.dim_ext_width_spin,
+            self.dim_line_width_spin,
+            self.dim_gap_from_object_spin,
+            self.dim_overshoot_spin,
+            self.dim_extension_spin,
+            self.dim_arrow_size_spin,
+            self.dim_arrow_type_combo,
+            self.dim_font_family_edit,
+            self.dim_text_height_spin,
+            self.dim_text_gap_spin,
+            self.dim_text_position_combo,
+        ]
+
+    def _load_dimension_style_controls(self, dimension_obj):
+        style = dimension_obj.style
+        controls = self._dimension_style_controls()
+        self._block_controls(controls, True)
+
+        self.dim_ext_line_type_combo.setCurrentText(style.extension_lines.line_type)
+        self.dim_line_type_combo.setCurrentText(style.dimension_line.line_type)
+        self.dim_ext_width_spin.setValue(style.extension_lines.width_px)
+        self.dim_line_width_spin.setValue(style.dimension_line.width_px)
+        self.dim_gap_from_object_spin.setValue(style.extension_lines.gap_from_object)
+        self.dim_overshoot_spin.setValue(style.extension_lines.overshoot)
+        self.dim_extension_spin.setValue(style.dimension_line.extension)
+        self.dim_arrow_size_spin.setValue(style.arrows.size)
+        self.dim_arrow_type_combo.setCurrentText(style.arrows.arrow_type)
+        self.dim_font_family_edit.setText(style.text.font_family)
+        self.dim_text_height_spin.setValue(style.text.height)
+        self.dim_text_gap_spin.setValue(style.text.gap)
+        self.dim_text_position_combo.setCurrentText(style.text.position)
+
+        self._block_controls(controls, False)
+
+        self._set_color_button(self.dim_ext_color_btn, style.extension_lines.color)
+        self._set_color_button(self.dim_line_color_btn, style.dimension_line.color)
+        self._set_color_button(self.dim_text_color_btn, style.text.color)
+
+    def setup_dimension_editing(self, dimension_obj, title):
+        self.title_label.setText(title)
+        self.editing_mode = False
+        self.dragging_point = None
+        if self.canvas:
+            self.canvas.set_editing_mode(False, None)
+
+        info_group = QGroupBox("Параметры размера")
+        info_layout = QGridLayout()
+        info_layout.addWidget(QLabel("Тип:"), 0, 0)
+        info_layout.addWidget(QLabel(str(getattr(dimension_obj, "dimension_type", "angle"))), 0, 1)
+        info_layout.addWidget(QLabel("Авто-значение:"), 1, 0)
+        self.dimension_auto_value_label = QLabel(dimension_obj._default_text())
+        info_layout.addWidget(self.dimension_auto_value_label, 1, 1)
+        info_layout.addWidget(QLabel("Текст на чертеже:"), 2, 0)
+        self.dimension_display_value_label = QLabel(dimension_obj.display_text)
+        info_layout.addWidget(self.dimension_display_value_label, 2, 1)
+        info_group.setLayout(info_layout)
+        self.content_layout.addWidget(info_group)
+
+        text_group = QGroupBox("Переопределение текста")
+        text_layout = QVBoxLayout()
+        text_layout.addWidget(QLabel("Пустое поле возвращает автоматическое значение."))
+        self.dimension_override_edit = QLineEdit()
+        self.dimension_override_edit.setPlaceholderText("Например: TYP, 25 max, 2 отв.")
+        self.dimension_override_edit.textChanged.connect(self.on_dimension_text_override_changed)
+        text_layout.addWidget(self.dimension_override_edit)
+        text_group.setLayout(text_layout)
+        self.content_layout.addWidget(text_group)
+
+        style_group = QGroupBox("Стиль размера")
+        style_layout = QGridLayout()
+
+        style_layout.addWidget(QLabel("Выносные: тип"), 0, 0)
+        self.dim_ext_line_type_combo = QComboBox()
+        self.dim_ext_line_type_combo.addItems(["solid", "dashed", "dash_dot", "dot"])
+        self.dim_ext_line_type_combo.currentTextChanged.connect(self.on_dimension_style_changed)
+        style_layout.addWidget(self.dim_ext_line_type_combo, 0, 1)
+
+        style_layout.addWidget(QLabel("Размерная: тип"), 0, 2)
+        self.dim_line_type_combo = QComboBox()
+        self.dim_line_type_combo.addItems(["solid", "dashed", "dash_dot", "dot"])
+        self.dim_line_type_combo.currentTextChanged.connect(self.on_dimension_style_changed)
+        style_layout.addWidget(self.dim_line_type_combo, 0, 3)
+
+        style_layout.addWidget(QLabel("Выносные: толщина"), 1, 0)
+        self.dim_ext_width_spin = QDoubleSpinBox()
+        self.dim_ext_width_spin.setRange(0.1, 10.0)
+        self.dim_ext_width_spin.setDecimals(2)
+        self.dim_ext_width_spin.setSingleStep(0.1)
+        self.dim_ext_width_spin.valueChanged.connect(self.on_dimension_style_changed)
+        style_layout.addWidget(self.dim_ext_width_spin, 1, 1)
+
+        style_layout.addWidget(QLabel("Размерная: толщина"), 1, 2)
+        self.dim_line_width_spin = QDoubleSpinBox()
+        self.dim_line_width_spin.setRange(0.1, 10.0)
+        self.dim_line_width_spin.setDecimals(2)
+        self.dim_line_width_spin.setSingleStep(0.1)
+        self.dim_line_width_spin.valueChanged.connect(self.on_dimension_style_changed)
+        style_layout.addWidget(self.dim_line_width_spin, 1, 3)
+
+        style_layout.addWidget(QLabel("Отступ от объекта"), 2, 0)
+        self.dim_gap_from_object_spin = QDoubleSpinBox()
+        self.dim_gap_from_object_spin.setRange(0.0, 50.0)
+        self.dim_gap_from_object_spin.setDecimals(2)
+        self.dim_gap_from_object_spin.valueChanged.connect(self.on_dimension_style_changed)
+        style_layout.addWidget(self.dim_gap_from_object_spin, 2, 1)
+
+        style_layout.addWidget(QLabel("Выход выносных"), 2, 2)
+        self.dim_overshoot_spin = QDoubleSpinBox()
+        self.dim_overshoot_spin.setRange(0.0, 50.0)
+        self.dim_overshoot_spin.setDecimals(2)
+        self.dim_overshoot_spin.valueChanged.connect(self.on_dimension_style_changed)
+        style_layout.addWidget(self.dim_overshoot_spin, 2, 3)
+
+        style_layout.addWidget(QLabel("Продление линии"), 3, 0)
+        self.dim_extension_spin = QDoubleSpinBox()
+        self.dim_extension_spin.setRange(0.0, 50.0)
+        self.dim_extension_spin.setDecimals(2)
+        self.dim_extension_spin.valueChanged.connect(self.on_dimension_style_changed)
+        style_layout.addWidget(self.dim_extension_spin, 3, 1)
+
+        style_layout.addWidget(QLabel("Стрелка: размер"), 3, 2)
+        self.dim_arrow_size_spin = QDoubleSpinBox()
+        self.dim_arrow_size_spin.setRange(0.5, 20.0)
+        self.dim_arrow_size_spin.setDecimals(2)
+        self.dim_arrow_size_spin.valueChanged.connect(self.on_dimension_style_changed)
+        style_layout.addWidget(self.dim_arrow_size_spin, 3, 3)
+
+        style_layout.addWidget(QLabel("Стрелка: тип"), 4, 0)
+        self.dim_arrow_type_combo = QComboBox()
+        self.dim_arrow_type_combo.addItems(["closed_filled", "open"])
+        self.dim_arrow_type_combo.currentTextChanged.connect(self.on_dimension_style_changed)
+        style_layout.addWidget(self.dim_arrow_type_combo, 4, 1)
+
+        style_layout.addWidget(QLabel("Текст: шрифт"), 4, 2)
+        self.dim_font_family_edit = QLineEdit()
+        self.dim_font_family_edit.textChanged.connect(self.on_dimension_style_changed)
+        style_layout.addWidget(self.dim_font_family_edit, 4, 3)
+
+        style_layout.addWidget(QLabel("Текст: высота"), 5, 0)
+        self.dim_text_height_spin = QDoubleSpinBox()
+        self.dim_text_height_spin.setRange(0.5, 50.0)
+        self.dim_text_height_spin.setDecimals(2)
+        self.dim_text_height_spin.valueChanged.connect(self.on_dimension_style_changed)
+        style_layout.addWidget(self.dim_text_height_spin, 5, 1)
+
+        style_layout.addWidget(QLabel("Текст: отступ"), 5, 2)
+        self.dim_text_gap_spin = QDoubleSpinBox()
+        self.dim_text_gap_spin.setRange(0.0, 50.0)
+        self.dim_text_gap_spin.setDecimals(2)
+        self.dim_text_gap_spin.valueChanged.connect(self.on_dimension_style_changed)
+        style_layout.addWidget(self.dim_text_gap_spin, 5, 3)
+
+        style_layout.addWidget(QLabel("Текст: положение"), 6, 0)
+        self.dim_text_position_combo = QComboBox()
+        self.dim_text_position_combo.addItems(["above", "center"])
+        self.dim_text_position_combo.currentTextChanged.connect(self.on_dimension_style_changed)
+        style_layout.addWidget(self.dim_text_position_combo, 6, 1)
+
+        style_layout.addWidget(QLabel("Цвет выносных"), 6, 2)
+        self.dim_ext_color_btn = QPushButton()
+        self.dim_ext_color_btn.clicked.connect(lambda: self.pick_dimension_color("extension"))
+        style_layout.addWidget(self.dim_ext_color_btn, 6, 3)
+
+        style_layout.addWidget(QLabel("Цвет размерной"), 7, 0)
+        self.dim_line_color_btn = QPushButton()
+        self.dim_line_color_btn.clicked.connect(lambda: self.pick_dimension_color("dimension"))
+        style_layout.addWidget(self.dim_line_color_btn, 7, 1)
+
+        style_layout.addWidget(QLabel("Цвет текста/стрелок"), 7, 2)
+        self.dim_text_color_btn = QPushButton()
+        self.dim_text_color_btn.clicked.connect(lambda: self.pick_dimension_color("text"))
+        style_layout.addWidget(self.dim_text_color_btn, 7, 3)
+
+        style_group.setLayout(style_layout)
+        self.content_layout.addWidget(style_group)
+
+        edit_mode_group = QGroupBox("Режим редактирования")
+        edit_mode_layout = QVBoxLayout()
+        self.edit_mode_label = QLabel("Перемещение размера: Отключено")
+        self.edit_mode_label.setStyleSheet("color: gray;")
+        edit_mode_layout.addWidget(self.edit_mode_label)
+
+        info_label = QLabel("Включите режим редактирования, чтобы перетаскивать положение размера мышью на холсте.")
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("color: #666; font-size: 9pt;")
+        edit_mode_layout.addWidget(info_label)
+
+        self.toggle_edit_mode_btn = QPushButton("Включить редактирование")
+        self.toggle_edit_mode_btn.clicked.connect(self.toggle_edit_mode)
+        edit_mode_layout.addWidget(self.toggle_edit_mode_btn)
+
+        edit_mode_group.setLayout(edit_mode_layout)
+        self.content_layout.addWidget(edit_mode_group)
+
+        self.load_dimension_data(dimension_obj)
+
+    def load_dimension_data(self, dimension_obj):
+        if not hasattr(self, "dimension_override_edit"):
+            return
+        self.dimension_override_edit.blockSignals(True)
+        self.dimension_override_edit.setText(dimension_obj.text_override or "")
+        self.dimension_override_edit.blockSignals(False)
+        self._update_dimension_labels(dimension_obj)
+
+        if hasattr(self, "dim_ext_line_type_combo"):
+            self._load_dimension_style_controls(dimension_obj)
+
+    def on_dimension_text_override_changed(self, text):
+        if self.editing_object is None:
+            return
+        self.editing_object.text_override = text or None
+        self._update_dimension_labels(self.editing_object)
+        self.apply_changes()
+
+    def _set_color_button(self, button, color: QColor):
+        button.setText(color.name().upper())
+        button.setStyleSheet(f"background-color: {color.name()};")
+
+    def pick_dimension_color(self, target: str):
+        if self.editing_object is None or not hasattr(self.editing_object, 'style'):
+            return
+        style = self.editing_object.style
+        if target == "extension":
+            current = style.extension_lines.color
+        elif target == "dimension":
+            current = style.dimension_line.color
+        else:
+            current = style.text.color
+
+        color = QColorDialog.getColor(current, self, "Выберите цвет размера")
+        if not color.isValid():
+            return
+
+        if target == "extension":
+            style.extension_lines.color = color
+            self._set_color_button(self.dim_ext_color_btn, color)
+        elif target == "dimension":
+            style.dimension_line.color = color
+            self._set_color_button(self.dim_line_color_btn, color)
+        else:
+            style.text.color = color
+            style.arrows.color = color
+            self._set_color_button(self.dim_text_color_btn, color)
+        self.apply_changes()
+
+    def on_dimension_style_changed(self, *_):
+        if self.editing_object is None or not hasattr(self.editing_object, 'style'):
+            return
+        style = self.editing_object.style
+        style.extension_lines.line_type = self.dim_ext_line_type_combo.currentText()
+        style.dimension_line.line_type = self.dim_line_type_combo.currentText()
+        style.extension_lines.width_px = self.dim_ext_width_spin.value()
+        style.dimension_line.width_px = self.dim_line_width_spin.value()
+        style.extension_lines.gap_from_object = self.dim_gap_from_object_spin.value()
+        style.extension_lines.overshoot = self.dim_overshoot_spin.value()
+        style.dimension_line.extension = self.dim_extension_spin.value()
+        style.arrows.size = self.dim_arrow_size_spin.value()
+        style.arrows.arrow_type = self.dim_arrow_type_combo.currentText()
+        style.text.font_family = self.dim_font_family_edit.text().strip() or style.text.font_family
+        style.text.height = self.dim_text_height_spin.value()
+        style.text.gap = self.dim_text_gap_spin.value()
+        style.text.position = self.dim_text_position_combo.currentText()
+        self.apply_changes()
+
     def closeEvent(self, event):
         """Обработчик закрытия окна"""
         # Отключаем режим редактирования при закрытии

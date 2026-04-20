@@ -32,9 +32,7 @@ class SnapPoint:
     
     def distance_to(self, other_point: QPointF) -> float:
         """Вычисляет расстояние до другой точки"""
-        dx = self.point.x() - other_point.x()
-        dy = self.point.y() - other_point.y()
-        return math.sqrt(dx*dx + dy*dy)
+        return math.hypot(self.point.x() - other_point.x(), self.point.y() - other_point.y())
 
 
 class SnapManager:
@@ -1997,6 +1995,125 @@ class SnapManager:
             ellipse.center.y() + y_world
         )
         tangents.append(tangent_point)
-        
+
         return tangents
+
+    def _distance_between_points(self, first: QPointF, second: QPointF) -> float:
+        """Возвращает расстояние между двумя точками."""
+        return math.hypot(first.x() - second.x(), first.y() - second.y())
+
+    def _is_far_enough_from_segment_endpoints(
+        self,
+        point: QPointF,
+        segment_start: QPointF,
+        segment_end: QPointF,
+        min_distance: float,
+    ) -> bool:
+        """Проверяет, что точка не слишком близка к концам сегмента."""
+        return (
+            self._distance_between_points(point, segment_start) > min_distance
+            and self._distance_between_points(point, segment_end) > min_distance
+        )
+
+    def _arc_mid_angle(self, start_angle: float, end_angle: float) -> float:
+        """Возвращает средний угол дуги с учетом перехода через 360 градусов."""
+        mid_angle = (start_angle + end_angle) / 2.0
+        if start_angle > end_angle:
+            span = (360.0 - start_angle) + end_angle
+            mid_angle = (start_angle + span / 2.0) % 360.0
+        return mid_angle
+
+    def _to_ellipse_local_coords(self, point: QPointF, ellipse) -> tuple[float, float]:
+        """Переводит мировую точку в локальные координаты эллипса с учетом поворота."""
+        x = point.x() - ellipse.center.x()
+        y = point.y() - ellipse.center.y()
+        if abs(ellipse.rotation_angle) > 1e-6:
+            cos_r = math.cos(-ellipse.rotation_angle)
+            sin_r = math.sin(-ellipse.rotation_angle)
+            return x * cos_r - y * sin_r, x * sin_r + y * cos_r
+        return x, y
+
+    def _from_ellipse_local_coords(self, x_local: float, y_local: float, ellipse) -> QPointF:
+        """Переводит локальные координаты эллипса в мировые."""
+        if abs(ellipse.rotation_angle) > 1e-6:
+            cos_r = math.cos(ellipse.rotation_angle)
+            sin_r = math.sin(ellipse.rotation_angle)
+            x_world = x_local * cos_r - y_local * sin_r
+            y_world = x_local * sin_r + y_local * cos_r
+        else:
+            x_world, y_world = x_local, y_local
+        return QPointF(ellipse.center.x() + x_world, ellipse.center.y() + y_world)
+
+    def _normalize_ellipse_coords(self, x_local: float, y_local: float, ellipse) -> tuple[float, float] | None:
+        """Нормализует локальные координаты эллипса к единичной окружности."""
+        if ellipse.radius_x < 1e-6 or ellipse.radius_y < 1e-6:
+            return None
+        return x_local / ellipse.radius_x, y_local / ellipse.radius_y
+
+    def _ellipse_equation_value(self, point: QPointF, ellipse) -> float | None:
+        """Возвращает значение уравнения эллипса в точке."""
+        local = self._to_ellipse_local_coords(point, ellipse)
+        normalized = self._normalize_ellipse_coords(local[0], local[1], ellipse)
+        if normalized is None:
+            return None
+        x_norm, y_norm = normalized
+        return x_norm * x_norm + y_norm * y_norm
+
+    def _arc_uses_direct_y(self, arc) -> bool:
+        """Определяет, нужно ли для дуги использовать прямой Y при вычислении параметрического угла."""
+        orig_start = arc.start_angle
+        orig_end = arc.end_angle
+        start_angle_norm = orig_start % 360
+        end_angle_norm = orig_end % 360
+
+        if abs(orig_start - 180.0) < 1.0 and abs(orig_end - 0.0) < 1.0:
+            return True
+        if start_angle_norm > end_angle_norm and (start_angle_norm - end_angle_norm) > 180:
+            if abs(orig_end - 360.0) > 1.0 and abs(orig_end - 0.0) < 1.0:
+                return True
+        return False
+
+    def _normalized_arc_range(self, arc) -> tuple[float, float]:
+        """Возвращает нормализованный диапазон углов дуги."""
+        start_angle = arc.start_angle % 360
+        end_angle = arc.end_angle % 360
+        if abs(arc.end_angle - 360.0) < 1e-6:
+            end_angle = 360.0
+        elif end_angle == 0 and arc.end_angle > 180:
+            end_angle = 360.0
+        return start_angle, end_angle
+
+    def _project_point_to_segment(
+        self,
+        point: QPointF,
+        segment_start: QPointF,
+        segment_end: QPointF,
+    ) -> tuple[QPointF, float, float] | None:
+        """Проецирует точку на отрезок и возвращает точку проекции, параметр t и длину в квадрате."""
+        dx = segment_end.x() - segment_start.x()
+        dy = segment_end.y() - segment_start.y()
+        length_sq = dx * dx + dy * dy
+        if length_sq < 1e-10:
+            return None
+        t = ((point.x() - segment_start.x()) * dx + (point.y() - segment_start.y()) * dy) / length_sq
+        t = max(0.0, min(1.0, t))
+        projection = QPointF(segment_start.x() + t * dx, segment_start.y() + t * dy)
+        return projection, t, length_sq
+
+    def _segment_components(
+        self,
+        segment_start: QPointF,
+        segment_end: QPointF,
+    ) -> tuple[float, float, float]:
+        """Возвращает dx, dy и квадрат длины отрезка."""
+        dx = segment_end.x() - segment_start.x()
+        dy = segment_end.y() - segment_start.y()
+        return dx, dy, dx * dx + dy * dy
+
+    def _normalize_vector(self, dx: float, dy: float) -> tuple[float, float, float] | None:
+        """Нормализует вектор и возвращает ux, uy, длину."""
+        length = math.hypot(dx, dy)
+        if length < 1e-10:
+            return None
+        return dx / length, dy / length, length
 

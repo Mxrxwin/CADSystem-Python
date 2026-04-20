@@ -8,9 +8,10 @@ from PySide6.QtGui import QColor
 
 class GeometricObject(ABC):
     """Базовый класс для всех геометрических объектов"""
-    
+
     def __init__(self):
         self._selected = False
+        self.layer_name: str = "0"
     
     @property
     def selected(self):

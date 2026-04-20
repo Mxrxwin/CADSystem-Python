@@ -26,26 +26,30 @@ class CoordinateSystemWidget(QWidget):
     line_finished = Signal()  # сигнал при завершении рисования отрезка
     rectangle_drawing_started = Signal(str)  # сигнал при начале рисования прямоугольника (передает метод)
     
-    def __init__(self, style_manager=None):
+    def __init__(self, style_manager=None, layer_manager=None):
         super().__init__()
-        
+
         # Создаем компоненты
         self.viewport = Viewport(self.width(), self.height())
         self.scene = Scene()
         self.selection_manager = SelectionManager()
         self.renderer = SceneRenderer(self.viewport, self.scene, self.selection_manager)
         self.snap_manager = SnapManager(tolerance=15.0)  # Увеличиваем tolerance для лучшей видимости привязок
-        
+
         # Менеджер стилей
         self.style_manager = style_manager
-        
+
+        # Менеджер слоёв (если None — слой не выставляется, объекты остаются на "0")
+        self._layer_manager = layer_manager
+        self.renderer.layer_manager = layer_manager
+
         # Текущая точка привязки для визуализации
         self.current_snap_point = None
-        
+
         # Параметры навигации
         self.pan_mode = False
         self.last_mouse_pos = None
-        
+
         # Параметры выделения рамкой
         self.is_selecting = False
         self.selection_start = None
@@ -56,44 +60,48 @@ class CoordinateSystemWidget(QWidget):
         self.right_button_click_timer = None
         self.last_left_click_time = 0
         self.last_left_click_pos = None
-        self.last_left_click_time = 0
-        self.last_left_click_pos = None
-        
+
         # Координаты курсора
         self.cursor_world_coords = None
-        
+
         # Точки ввода для визуализации (для окружности, дуги, эллипса, прямоугольника)
-        self.input_points = []  # Список точек для отображения
-        
+        self.input_points = []
+
         # Настройки отрисовки
         self.line_color = QColor(0, 0, 0)
         self.line_width = 2
-        
+
         # Тип создаваемого примитива
-        self.primitive_type = 'line'  # 'line', 'circle', 'arc', 'rectangle', 'ellipse', 'polygon', 'spline'
-        # Метод создания окружности
-        self.circle_creation_method = 'center_radius'  # 'center_radius', 'center_diameter', 'two_points', 'three_points'
-        # Метод создания дуги
-        self.arc_creation_method = 'three_points'  # 'three_points', 'center_angles'
-        # Метод создания прямоугольника
-        self.rectangle_creation_method = 'two_points'  # 'two_points', 'point_size', 'center_size', 'with_fillets'
-        # Метод создания многоугольника
-        self.polygon_creation_method = 'center_radius_vertices'  # 'center_radius_vertices'
+        self.primitive_type = 'line'
+        self.circle_creation_method = 'center_radius'
+        self.arc_creation_method = 'three_points'
+        self.rectangle_creation_method = 'two_points'
+        self.polygon_creation_method = 'center_radius_vertices'
         self.polygon_num_vertices = 3
-        
+
         # Режим редактирования (перемещение точек)
         self.editing_mode = False
-        self.edit_dialog = None  # Ссылка на окно редактирования
-        self.dragging_point = None  # 'start' или 'end' - какая точка перемещается
-        self.drag_start_pos = None  # Позиция начала перетаскивания
-        
+        self.edit_dialog = None
+        self.dragging_point = None
+        self.drag_start_pos = None
+
         # Подключаем сигналы
         self.selection_manager.selection_changed.connect(self._on_selection_changed)
-        
+
         self.setMinimumSize(600, 400)
         self.setMouseTracking(True)
         self.setContextMenuPolicy(Qt.NoContextMenu)
-        self.setFocusPolicy(Qt.StrongFocus)  # Для получения событий клавиатуры
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    @property
+    def layer_manager(self):
+        return self._layer_manager
+
+    @layer_manager.setter
+    def layer_manager(self, value):
+        self._layer_manager = value
+        self.renderer.layer_manager = value
+        self.update()
     
     def set_editing_mode(self, enabled, edit_dialog=None):
         """Устанавливает режим редактирования (перемещение точек)"""
@@ -712,6 +720,13 @@ class CoordinateSystemWidget(QWidget):
         """Очищает точки ввода"""
         self.input_points = []
         self.update()
+
+    def _finish_drawing_with_layer(self):
+        """Завершает рисование и выставляет текущий слой на созданный объект."""
+        obj = self.scene.finish_drawing()
+        if obj is not None and self.layer_manager is not None:
+            obj.layer_name = self.layer_manager.current_layer_name
+        return obj
     
     def show_context_menu(self, position):
         """Показывает контекстное меню"""
@@ -1095,6 +1110,9 @@ class CoordinateSystemWidget(QWidget):
                         pass
                     self.scene.start_drawing(world_pos, drawing_type=self.primitive_type,
                                             style=style, color=self.line_color, width=self.line_width, **kwargs)
+                    current_obj = self.scene.get_current_object()
+                    if current_obj is not None and self.layer_manager is not None:
+                        current_obj.layer_name = self.layer_manager.current_layer_name
                     # Устанавливаем фокус для получения событий клавиатуры (например, ESC для отмены)
                     self.setFocus()
                     # Эмитируем сигнал о начале рисования прямоугольника (после start_drawing)
@@ -1123,7 +1141,7 @@ class CoordinateSystemWidget(QWidget):
                             else:
                                 # Третий клик - точка высоты, завершаем
                                 self.scene.update_current_object(world_pos)
-                                obj = self.scene.finish_drawing()
+                                obj = self._finish_drawing_with_layer()
                                 if obj:
                                     self.line_finished.emit()
                         elif method == 'center_angles':
@@ -1141,7 +1159,7 @@ class CoordinateSystemWidget(QWidget):
                                 dy = world_pos.y() - self.scene._arc_center.y()
                                 end_angle = math.degrees(math.atan2(dy, dx))
                                 self.scene.update_current_object(world_pos)
-                                obj = self.scene.finish_drawing()
+                                obj = self._finish_drawing_with_layer()
                                 if obj:
                                     self.line_finished.emit()
                     elif self.primitive_type == 'circle':
@@ -1157,7 +1175,7 @@ class CoordinateSystemWidget(QWidget):
                                 # Третий клик - завершаем
                                 self.scene._circle_point3 = world_pos
                                 self.scene.update_current_object(world_pos)
-                                obj = self.scene.finish_drawing()
+                                obj = self._finish_drawing_with_layer()
                                 if obj:
                                     self.line_finished.emit()
                         else:
@@ -1165,7 +1183,7 @@ class CoordinateSystemWidget(QWidget):
                             current_obj = self.scene.get_current_object()
                             if current_obj:
                                 self.scene.update_current_object(world_pos)
-                            obj = self.scene.finish_drawing()
+                            obj = self._finish_drawing_with_layer()
                             if obj:
                                 self.line_finished.emit()
                     elif self.primitive_type == 'ellipse':
@@ -1181,13 +1199,13 @@ class CoordinateSystemWidget(QWidget):
                         else:
                             # Третий клик - точка высоты, завершаем
                             self.scene.update_current_object(world_pos)
-                            obj = self.scene.finish_drawing()
+                            obj = self._finish_drawing_with_layer()
                             if obj:
                                 self.line_finished.emit()
                     elif self.primitive_type == 'polygon':
                         # Для многоугольника второй клик завершает создание (радиус определяется)
                         self.scene.update_current_object(world_pos)
-                        obj = self.scene.finish_drawing()
+                        obj = self._finish_drawing_with_layer()
                         if obj:
                             self.line_finished.emit()
                     elif self.primitive_type == 'spline':
@@ -1205,7 +1223,7 @@ class CoordinateSystemWidget(QWidget):
                             is_closed = self.scene.add_spline_control_point(world_pos, tolerance)
                             if is_closed:
                                 # Если сплайн замкнут, завершаем создание
-                                obj = self.scene.finish_drawing()
+                                obj = self._finish_drawing_with_layer()
                                 if obj:
                                     self.line_finished.emit()
                             self.update()
@@ -1225,7 +1243,7 @@ class CoordinateSystemWidget(QWidget):
                                     self.scene._drawing_type == 'rectangle' and
                                     self.scene._rectangle_width > 0.0 and 
                                     self.scene._rectangle_height > 0.0):
-                                    obj = self.scene.finish_drawing()
+                                    obj = self._finish_drawing_with_layer()
                                     if obj:
                                         self.line_finished.emit()
                                     self.update()
@@ -1237,7 +1255,7 @@ class CoordinateSystemWidget(QWidget):
                             current_obj = self.scene.get_current_object()
                             if current_obj:
                                 self.scene.update_current_object(world_pos)
-                            obj = self.scene.finish_drawing()
+                            obj = self._finish_drawing_with_layer()
                             if obj:
                                 self.line_finished.emit()
                     else:
@@ -1246,7 +1264,7 @@ class CoordinateSystemWidget(QWidget):
                         if current_obj:
                             # Обновляем объект перед завершением
                             self.scene.update_current_object(world_pos)
-                        obj = self.scene.finish_drawing()
+                        obj = self._finish_drawing_with_layer()
                         if obj:
                             self.line_finished.emit()
                 
@@ -1851,7 +1869,7 @@ class CoordinateSystemWidget(QWidget):
                 
                 # Проверяем количество зафиксированных точек
                 if len(self.scene._spline_control_points) >= 2:
-                    obj = self.scene.finish_drawing()
+                    obj = self._finish_drawing_with_layer()
                     if obj:
                         self.line_finished.emit()
                     self.update()
@@ -2119,7 +2137,7 @@ class CoordinateSystemWidget(QWidget):
     def start_new_line(self):
         """Начинает новый отрезок"""
         if self.scene.is_drawing():
-            self.scene.finish_drawing()
+            self._finish_drawing_with_layer()
         self.update()
     
     def delete_last_line(self):
@@ -2180,19 +2198,23 @@ class CoordinateSystemWidget(QWidget):
             style = self.style_manager.get_current_style()
         
         if apply:
-            new_line = LineSegment(start_point, end_point, style=style, 
+            new_line = LineSegment(start_point, end_point, style=style,
                                   color=self.line_color, width=self.line_width)
             if hasattr(new_line, '_legacy_color'):
                 new_line._legacy_color = self.line_color
+            if self.layer_manager is not None:
+                new_line.layer_name = self.layer_manager.current_layer_name
             self.scene.add_object(new_line)
             self.update()
         else:
             if not self.scene.is_drawing():
                 self.scene.start_drawing(start_point, drawing_type='line', style=style,
                                        color=self.line_color, width=self.line_width)
+                current_obj = self.scene.get_current_object()
+                if current_obj is not None and self.layer_manager is not None:
+                    current_obj.layer_name = self.layer_manager.current_layer_name
                 # Устанавливаем фокус для получения событий клавиатуры (например, ESC для отмены)
                 self.setFocus()
-                current_obj = self.scene.get_current_object()
                 if current_obj:
                     self.scene.update_current_object(end_point)
                     if hasattr(current_obj, '_legacy_color'):

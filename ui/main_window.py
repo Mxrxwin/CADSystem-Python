@@ -1,18 +1,21 @@
 import sys
 import math
-from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+from datetime import datetime
+from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QPushButton, QLabel, QComboBox, QDoubleSpinBox, QGroupBox,
                                QGridLayout, QSpinBox, QColorDialog, QMessageBox, QToolBar,
                                QStatusBar, QMenu, QSizePolicy, QSplitter, QScrollArea,
-                               QTableWidget, QTableWidgetItem, QHeaderView, QToolButton)
+                               QTableWidget, QTableWidgetItem, QHeaderView, QToolButton,
+                               QFileDialog, QPlainTextEdit)
 from PySide6.QtCore import QPointF, Qt, QSize, QRectF
 from PySide6.QtGui import QColor, QAction, QIcon, QKeySequence, QPixmap, QPainter, QPen
 
 from widgets.coordinate_system import CoordinateSystemWidget
-from widgets.line_style import LineStyleManager
+from widgets.line_style import LineStyleManager, LineType
 from ui.style_panels import ObjectPropertiesPanel, StyleManagementPanel, StyleComboBox
 from ui.edit_dialog import EditDialog
 from ui.icons import toolbar_icons
+from core.layer import LayerManager
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -32,18 +35,32 @@ class MainWindow(QMainWindow):
         
         # Создаем менеджер стилей
         self.style_manager = LineStyleManager()
-        
+
+        # Менеджер слоёв
+        self.layer_manager = LayerManager()
+
         # сначала создаем canvas
-        self.canvas = CoordinateSystemWidget(style_manager=self.style_manager)
+        self.canvas = CoordinateSystemWidget(
+            style_manager=self.style_manager,
+            layer_manager=self.layer_manager,
+        )
         
         # Выделенные объекты
         self.selected_objects = []
         
         # Последний созданный объект для undo
         self.last_created_object = None
+        self._last_debug_signature = None
         
         self.init_ui()
-        
+
+        # Перерисовываем canvas и обновляем диагностику при изменении слоёв/стилей
+        self.layer_manager.layer_changed.connect(self._on_layer_changed)
+        self.layer_manager.layer_added.connect(self._on_layer_added)
+        self.layer_manager.layer_removed.connect(self._on_layer_removed)
+        self.layer_manager.current_changed.connect(self._on_current_layer_changed)
+        self.style_manager.style_changed.connect(self._on_style_changed)
+
         # Окно редактирования (создаем после init_ui, чтобы canvas был готов)
         self.edit_dialog = EditDialog(self)
         self.edit_dialog.set_canvas(self.canvas)
@@ -94,7 +111,7 @@ class MainWindow(QMainWindow):
         primitive_toolbar.setMaximumWidth(80)
         
         # Создаем кнопки-инструменты для каждого примитива
-        primitives = ["Отрезок", "Окружность", "Дуга", "Прямоугольник", "Эллипс", "Многоугольник", "Сплайн"]
+        primitives = ["Отрезок", "Окружность", "Дуга", "Прямоугольник", "Эллипс", "Многоугольник", "Сплайн", "Размер"]
         self.primitive_buttons = []
         
         for primitive in primitives:
@@ -322,6 +339,25 @@ class MainWindow(QMainWindow):
         self.ellipse_method_widget.setLayout(ellipse_method_layout)
         self.ellipse_method_widget.hide()
         tools_layout.addWidget(self.ellipse_method_widget)
+
+        # Выбор типа размерной линии (скрыто по умолчанию)
+        dimension_method_layout = QHBoxLayout()
+        dimension_method_layout.addWidget(QLabel("Тип размера:"))
+        self.dimension_type_combo = QComboBox()
+        self.dimension_type_combo.addItems([
+            "Линейный горизонтальный",
+            "Линейный вертикальный",
+            "Линейный выровненный",
+            "Радиус",
+            "Диаметр",
+            "Угловой",
+        ])
+        self.dimension_type_combo.currentIndexChanged.connect(self.change_dimension_type_index)
+        dimension_method_layout.addWidget(self.dimension_type_combo)
+        self.dimension_method_widget = QWidget()
+        self.dimension_method_widget.setLayout(dimension_method_layout)
+        self.dimension_method_widget.hide()
+        tools_layout.addWidget(self.dimension_method_widget)
 
         # Группы для сплайна (добавляем в tools_group, чтобы не скрывалась с input_group)
         self.spline_control_points_group = QWidget()
@@ -801,8 +837,8 @@ class MainWindow(QMainWindow):
         
         # цвета
         color_layout = QVBoxLayout()
-        self.line_color_btn = QPushButton("Цвет отрезка")
-        self.line_color_btn.clicked.connect(self.change_line_color)
+        self.line_color_label = QLabel("Цвет объектов задаётся слоем")
+        self.line_color_label.setWordWrap(True)
         
         self.bg_color_btn = QPushButton("Цвет фона")
         self.bg_color_btn.clicked.connect(self.change_background_color)
@@ -810,7 +846,7 @@ class MainWindow(QMainWindow):
         self.grid_color_btn = QPushButton("Цвет сетки")
         self.grid_color_btn.clicked.connect(self.change_grid_color)
         
-        color_layout.addWidget(self.line_color_btn)
+        color_layout.addWidget(self.line_color_label)
         color_layout.addWidget(self.bg_color_btn)
         color_layout.addWidget(self.grid_color_btn)
         settings_layout.addLayout(color_layout)
@@ -824,7 +860,7 @@ class MainWindow(QMainWindow):
         
         # Добавляем панели стилей
         # Панель свойств объекта (будет перемещена в панель редактирования)
-        self.object_properties_panel = ObjectPropertiesPanel(self.style_manager)
+        self.object_properties_panel = ObjectPropertiesPanel(self.style_manager, self.layer_manager)
         self.object_properties_panel.style_changed.connect(self.on_object_style_changed)
         # Устанавливаем ссылку на canvas для доступа к линиям
         self.object_properties_panel.canvas = self.canvas
@@ -837,7 +873,7 @@ class MainWindow(QMainWindow):
         self.edit_panel_layout.insertWidget(1, self.object_properties_panel)
         
         # Панель управления стилями
-        self.style_management_panel = StyleManagementPanel(self.style_manager)
+        self.style_management_panel = StyleManagementPanel(self.style_manager, self.layer_manager)
         left_panel.addWidget(self.style_management_panel)
         
         left_panel.addStretch()
@@ -877,17 +913,39 @@ class MainWindow(QMainWindow):
         self.info_value4 = QLabel("")
         info_layout.addWidget(self.info_label4, 3, 0)
         info_layout.addWidget(self.info_value4, 3, 1)
+
+        self.info_label5 = QLabel("")
+        self.info_value5 = QLabel("")
+        info_layout.addWidget(self.info_label5, 4, 0)
+        info_layout.addWidget(self.info_value5, 4, 1)
+
+        self.info_label6 = QLabel("")
+        self.info_value6 = QLabel("")
+        info_layout.addWidget(self.info_label6, 5, 0)
+        info_layout.addWidget(self.info_value6, 5, 1)
         
         info_group.setLayout(info_layout)
         # Устанавливаем минимальную высоту для информационной панели
-        info_group.setMinimumHeight(150)
+        info_group.setMinimumHeight(210)
         right_splitter.addWidget(info_group)
+
+        debug_group = QGroupBox("Диагностика")
+        debug_layout = QVBoxLayout()
+        self.debug_log = QPlainTextEdit()
+        self.debug_log.setReadOnly(True)
+        self.debug_log.setMaximumBlockCount(200)
+        self.debug_log.setPlaceholderText("Здесь будет диагностическая информация по объекту, стилю, слою и типу линии.")
+        debug_layout.addWidget(self.debug_log)
+        debug_group.setLayout(debug_layout)
+        debug_group.setMinimumHeight(160)
+        right_splitter.addWidget(debug_group)
         
-        # Устанавливаем пропорции: рабочая область - 4 части, информационная панель - 1 часть
+        # Устанавливаем пропорции: рабочая область - 4 части, инфо и диагностика - по 1 части
         right_splitter.setStretchFactor(0, 4)
         right_splitter.setStretchFactor(1, 1)
-        # Устанавливаем начальные размеры: рабочая область - большая часть, информационная панель - меньшая
-        right_splitter.setSizes([800, 200])
+        right_splitter.setStretchFactor(2, 1)
+        # Устанавливаем начальные размеры: рабочая область - большая часть, нижние панели - меньше
+        right_splitter.setSizes([700, 220, 180])
         
         # Добавляем виджеты в splitter (левая часть уже содержит панель инструментов и блок настроек)
         main_splitter.addWidget(left_splitter)
@@ -997,8 +1055,35 @@ class MainWindow(QMainWindow):
     
     def create_menus(self):
         menubar = self.menuBar()
-        
-        # меню "Вид"
+
+        # ── меню "Файл" ──────────────────────────────────────────────────
+        file_menu = menubar.addMenu("Файл")
+
+        export_dxf_action = QAction("Экспорт в DXF…", self)
+        export_dxf_action.setShortcut("Ctrl+E")
+        export_dxf_action.triggered.connect(self.export_to_dxf)
+        file_menu.addAction(export_dxf_action)
+
+        file_menu.addSeparator()
+
+        exit_action = QAction("Выход", self)
+        exit_action.setShortcut("Alt+F4")
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+
+        # ── меню "Слои" ───────────────────────────────────────────────────
+        layer_menu = menubar.addMenu("Слои")
+
+        layer_manager_action = QAction("Менеджер слоёв…", self)
+        layer_manager_action.setShortcut("Ctrl+L")
+        layer_manager_action.triggered.connect(self.open_layer_dialog)
+        layer_menu.addAction(layer_manager_action)
+
+        assign_layer_action = QAction("Назначить слой выделенным…", self)
+        assign_layer_action.triggered.connect(self.assign_layer_to_selected)
+        layer_menu.addAction(assign_layer_action)
+
+        # ── меню "Вид" ────────────────────────────────────────────────────
         view_menu = menubar.addMenu("Вид")
         
         # действия для навигации
@@ -1178,7 +1263,7 @@ class MainWindow(QMainWindow):
         style_label = QLabel("Текущий стиль:")
         style_toolbar.addWidget(style_label)
         
-        self.current_style_combo = StyleComboBox(self.style_manager)
+        self.current_style_combo = StyleComboBox(self.style_manager, self.layer_manager)
         self.current_style_combo.currentIndexChanged.connect(self.on_current_style_changed)
         style_toolbar.addWidget(self.current_style_combo)
         
@@ -1190,6 +1275,11 @@ class MainWindow(QMainWindow):
         style = self.current_style_combo.get_current_style()
         if style:
             self.style_manager.set_current_style(style.name)
+            self._append_debug_log(
+                "Активный стиль: "
+                f"{style.name} ({self._line_type_display(getattr(style, 'line_type', None))})"
+            )
+            self.update_info()
     
     def set_current_style(self, style_name):
         """Устанавливает текущий стиль"""
@@ -1202,6 +1292,61 @@ class MainWindow(QMainWindow):
         """Обработчик изменения стиля объекта"""
         # Обновляем отрисовку
         self.canvas.update()
+
+    def _on_style_changed(self, style):
+        """Обновляет UI и диагностику при изменении параметров стиля."""
+        self.canvas.update()
+        self.update_info()
+        if style is not None:
+            effective_line_type = self._resolve_line_type_for_layer_name(
+                self._normalize_line_type(getattr(style, "line_type", None)),
+                self.layer_manager.current_layer_name if self.layer_manager else "0",
+            )
+            self._append_debug_log(
+                f"Стиль изменён: {getattr(style, 'name', 'без имени')} | "
+                f"тип={self._line_type_display(getattr(style, 'line_type', None))} | "
+                f"итог на текущем слое={self._line_type_display(effective_line_type)}"
+            )
+
+    def _on_layer_changed(self, layer):
+        """Обновляет UI и диагностику при изменении параметров слоя."""
+        self.canvas.update()
+        self.update_info()
+        if layer is not None:
+            self._append_debug_log(
+                f"Слой изменён: {layer.name} | "
+                f"тип линии={getattr(layer, 'line_type', 'Continuous')} | "
+                f"видимый={'да' if getattr(layer, 'visible', True) else 'нет'} | "
+                f"заблокирован={'да' if getattr(layer, 'locked', False) else 'нет'}"
+            )
+
+    def _on_layer_added(self, layer):
+        self.canvas.update()
+        self.update_info()
+        if layer is not None:
+            self._append_debug_log(
+                f"Слой добавлен: {layer.name} | тип линии={getattr(layer, 'line_type', 'Continuous')}"
+            )
+
+    def _on_layer_removed(self, layer_name):
+        self.canvas.update()
+        self.update_info()
+        self._append_debug_log(f"Слой удалён: {layer_name}")
+
+    def _on_current_layer_changed(self, layer_name):
+        """Обновляет UI и диагностику при переключении текущего слоя."""
+        self.canvas.update()
+        self.update_info()
+        style = self.style_manager.get_current_style() if self.style_manager else None
+        effective_line_type = self._resolve_line_type_for_layer_name(
+            self._normalize_line_type(getattr(style, "line_type", None)) if style else None,
+            layer_name,
+        )
+        self._append_debug_log(
+            f"Текущий слой: {layer_name} | "
+            f"активный стиль={getattr(style, 'name', 'нет')} | "
+            f"итоговый тип={self._line_type_display(effective_line_type)}"
+        )
     
     def on_selection_changed(self, selected_objects):
         """Обработчик изменения выделения"""
@@ -1605,6 +1750,14 @@ class MainWindow(QMainWindow):
         
         # фиксируем отрезок (apply=True)
         self.canvas.set_points_from_input(start_point, end_point, apply=True)
+
+    def _add_object_to_scene(self, obj):
+        """Добавляет объект в сцену и назначает ему текущий слой."""
+        if obj is None:
+            return
+        if self.layer_manager is not None:
+            obj.layer_name = self.layer_manager.current_layer_name
+        self.canvas.scene.add_object(obj)
     
     def apply_circle_coordinates(self, center_point):
         """Применяет координаты для создания окружности"""
@@ -1623,13 +1776,13 @@ class MainWindow(QMainWindow):
             radius = self.circle_radius_spin.value()
             circle = Circle(center_point, radius, style=style, 
                           color=self.canvas.line_color, width=self.canvas.line_width)
-            self.canvas.scene.add_object(circle)
+            self._add_object_to_scene(circle)
         elif method_name == "Центр и диаметр":
             diameter = self.circle_diameter_spin.value()
             radius = diameter / 2.0
             circle = Circle(center_point, radius, style=style,
                           color=self.canvas.line_color, width=self.canvas.line_width)
-            self.canvas.scene.add_object(circle)
+            self._add_object_to_scene(circle)
         elif method_name == "Две точки":
             point2 = QPointF(self.circle_point2_x_spin.value(), self.circle_point2_y_spin.value())
             import math
@@ -1641,7 +1794,7 @@ class MainWindow(QMainWindow):
             center = QPointF(center_x, center_y)
             circle = Circle(center, radius, style=style,
                           color=self.canvas.line_color, width=self.canvas.line_width)
-            self.canvas.scene.add_object(circle)
+            self._add_object_to_scene(circle)
         elif method_name == "Три точки на окружности":
             point2 = QPointF(self.circle_point2_x_spin_3p.value(), self.circle_point2_y_spin_3p.value())
             point3 = QPointF(self.circle_point3_x_spin.value(), self.circle_point3_y_spin.value())
@@ -1671,7 +1824,7 @@ class MainWindow(QMainWindow):
             if center and radius > 0:
                 circle = Circle(center, radius, style=style,
                               color=self.canvas.line_color, width=self.canvas.line_width)
-                self.canvas.scene.add_object(circle)
+                self._add_object_to_scene(circle)
         
         self.canvas.update()
         # Автоматически показываем все объекты с сохранением поворота
@@ -1750,14 +1903,14 @@ class MainWindow(QMainWindow):
                 if radius_x > 0 and radius_y > 0:
                     arc = Arc(center, radius_x, radius_y, start_angle, end_angle, style=style,
                             color=self.canvas.line_color, width=self.canvas.line_width, rotation_angle=rotation_angle)
-                    self.canvas.scene.add_object(arc)
+                    self._add_object_to_scene(arc)
         elif method_name == "Центр, начальный угол, конечный угол":
             radius = self.arc_radius_spin.value()
             start_angle = self.arc_start_angle_spin.value()
             end_angle = self.arc_end_angle_spin.value()
             arc = Arc(start_point, radius, radius, start_angle, end_angle, style=style,
                      color=self.canvas.line_color, width=self.canvas.line_width, rotation_angle=0.0)
-            self.canvas.scene.add_object(arc)
+            self._add_object_to_scene(arc)
         
         self.canvas.update()
         # Автоматически показываем все объекты с сохранением поворота
@@ -1838,14 +1991,14 @@ class MainWindow(QMainWindow):
                 end_point = QPointF(start_point.x() + delta_x, start_point.y() + delta_y)
             rectangle = Rectangle(start_point, end_point, style=style,
                                  color=self.canvas.line_color, width=self.canvas.line_width)
-            self.canvas.scene.add_object(rectangle)
+            self._add_object_to_scene(rectangle)
         elif method_name == "Одна точка, ширина и высота":
             width = self.rectangle_width_spin.value()
             height = self.rectangle_height_spin.value()
             end_point = QPointF(start_point.x() + width, start_point.y() + height)
             rectangle = Rectangle(start_point, end_point, style=style,
                                 color=self.canvas.line_color, width=self.canvas.line_width)
-            self.canvas.scene.add_object(rectangle)
+            self._add_object_to_scene(rectangle)
         elif method_name == "Центр, ширина и высота":
             width = self.rectangle_center_width_spin.value()
             height = self.rectangle_center_height_spin.value()
@@ -1855,7 +2008,7 @@ class MainWindow(QMainWindow):
             bottom_right = QPointF(start_point.x() + half_width, start_point.y() + half_height)
             rectangle = Rectangle(top_left, bottom_right, style=style,
                                 color=self.canvas.line_color, width=self.canvas.line_width)
-            self.canvas.scene.add_object(rectangle)
+            self._add_object_to_scene(rectangle)
         elif method_name == "С фасками/скруглениями при создании":
             # Используем обычные поля для конечной точки
             if self.coordinate_system == "cartesian":
@@ -1875,7 +2028,7 @@ class MainWindow(QMainWindow):
             rectangle = Rectangle(start_point, end_point, style=style,
                                 color=self.canvas.line_color, width=self.canvas.line_width,
                                 fillet_radius=fillet_radius)
-            self.canvas.scene.add_object(rectangle)
+            self._add_object_to_scene(rectangle)
         
         self.canvas.update()
         # Автоматически показываем все объекты с сохранением поворота
@@ -1953,7 +2106,7 @@ class MainWindow(QMainWindow):
             if radius_x > 0 and radius_y > 0:
                 ellipse = Ellipse(center_point, radius_x, radius_y, style=style,
                                  color=self.canvas.line_color, width=self.canvas.line_width, rotation_angle=0.0)
-                self.canvas.scene.add_object(ellipse)
+                self._add_object_to_scene(ellipse)
         elif method_name == "Три точки на эллипсе":
             point2 = QPointF(self.ellipse_point2_x_spin.value(), self.ellipse_point2_y_spin.value())
             point3 = QPointF(self.ellipse_point3_x_spin.value(), self.ellipse_point3_y_spin.value())
@@ -1966,7 +2119,7 @@ class MainWindow(QMainWindow):
                 if center is not None and radius_x > 0 and radius_y > 0:
                     ellipse = Ellipse(center, radius_x, radius_y, style=style,
                                     color=self.canvas.line_color, width=self.canvas.line_width, rotation_angle=rotation_angle)
-                    self.canvas.scene.add_object(ellipse)
+                    self._add_object_to_scene(ellipse)
         
         self.canvas.update()
         # Автоматически показываем все объекты с сохранением поворота
@@ -2050,7 +2203,7 @@ class MainWindow(QMainWindow):
                 polygon = Polygon(center_point, radius, num_vertices, style=style,
                                  color=self.canvas.line_color, width=self.canvas.line_width)
             
-            self.canvas.scene.add_object(polygon)
+            self._add_object_to_scene(polygon)
         
         self.canvas.update()
         # Автоматически показываем все объекты с сохранением поворота
@@ -2097,7 +2250,8 @@ class MainWindow(QMainWindow):
             "Прямоугольник": "rectangle",
             "Эллипс": "ellipse",
             "Многоугольник": "polygon",
-            "Сплайн": "spline"
+            "Сплайн": "spline",
+            "Размер": "dimension",
         }
         primitive_type = primitive_map.get(primitive_name, "line")
         # Устанавливаем тип примитива в canvas
@@ -2195,7 +2349,12 @@ class MainWindow(QMainWindow):
             self.arc_method_widget.hide()
             self.rectangle_method_widget.hide()
             self.ellipse_method_widget.hide()
+            if hasattr(self, 'dimension_method_widget'):
+                self.dimension_method_widget.hide()
             self.update_polygon_input_fields()
+        elif primitive_type == "dimension":
+            self.activate_dimension_tool()
+            return
         else:
             self.line_method_widget.hide()
             self.circle_method_widget.hide()
@@ -2932,12 +3091,13 @@ class MainWindow(QMainWindow):
         """Обновляет информационную панель в зависимости от типа последнего объекта"""
         # Получаем все объекты из сцены
         objects = self.canvas.scene.get_objects()
+        current_obj = self.canvas.scene.get_current_object()
         
         # Обновляем счетчик объектов
         total_objects = len(objects)
         self.lines_count_label.setText(f"Объектов на экране: {total_objects}")
         
-        if not objects:
+        if not objects and current_obj is None:
             # Нет объектов - показываем пустую информацию
             self._clear_info_panel()
             return
@@ -2963,7 +3123,11 @@ class MainWindow(QMainWindow):
             # Проверяем, что объект все еще в сцене
             if obj_to_display not in objects:
                 obj_to_display = None
-        
+
+        # Во время предпросмотра показываем текущий рисуемый объект
+        if obj_to_display is None and current_obj is not None:
+            obj_to_display = current_obj
+
         # Если не нашли объект для отображения, используем последний (новый объект)
         if obj_to_display is None:
             obj_to_display = objects[-1]
@@ -3038,6 +3202,103 @@ class MainWindow(QMainWindow):
         self.info_value3.setText("")
         self.info_label4.setText("")
         self.info_value4.setText("")
+        self.info_label5.setText("")
+        self.info_value5.setText("")
+        self.info_label6.setText("")
+        self.info_value6.setText("")
+        self._last_debug_signature = None
+
+    def _normalize_line_type(self, value):
+        if isinstance(value, LineType):
+            return value
+        if value is None:
+            return None
+
+        text = str(value).strip()
+        if not text:
+            return None
+
+        for line_type in LineType:
+            if text == line_type.value or text.upper() == line_type.name:
+                return line_type
+        return None
+
+    def _resolve_line_type_for_layer_name(self, raw_line_type, layer_name):
+        if raw_line_type and raw_line_type != LineType.BY_LAYER:
+            return raw_line_type
+
+        layer = self.layer_manager.get_layer(layer_name) if self.layer_manager else None
+        layer_linetype = str(getattr(layer, "line_type", "Continuous") or "Continuous").strip().upper()
+        layer_map = {
+            "CONTINUOUS": LineType.SOLID_MAIN,
+            "CAD_DASHED": LineType.DASHED,
+            "DASHED": LineType.DASHED,
+            "CAD_CENTER": LineType.DASH_DOT_THICK,
+            "CENTER": LineType.DASH_DOT_THICK,
+            "CAD_DASHDOT": LineType.DASH_DOT_THIN,
+            "DASHDOT": LineType.DASH_DOT_THIN,
+            "CAD_PHANTOM": LineType.DASH_DOT_TWO_DOTS,
+            "DASHDOT2": LineType.DASH_DOT_TWO_DOTS,
+            "PHANTOM": LineType.DASH_DOT_TWO_DOTS,
+        }
+        return layer_map.get(layer_linetype, LineType.SOLID_MAIN)
+
+    def _resolve_effective_line_type(self, obj):
+        style = getattr(obj, "style", None)
+        raw_line_type = self._normalize_line_type(getattr(style, "line_type", None)) if style else None
+        layer_name = getattr(obj, "layer_name", "0")
+        return self._resolve_line_type_for_layer_name(raw_line_type, layer_name)
+
+    def _line_type_display(self, line_type):
+        normalized = self._normalize_line_type(line_type)
+        if isinstance(normalized, LineType):
+            return normalized.display_name
+        return str(line_type) if line_type is not None else "не задан"
+
+    def _append_debug_log(self, message):
+        if not hasattr(self, "debug_log"):
+            return
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.debug_log.appendPlainText(f"[{timestamp}] {message}")
+
+    def _update_object_debug_info(self, obj):
+        style = getattr(obj, "style", None)
+        style_name = getattr(style, "name", "нет") if style else "нет"
+        raw_line_type = self._normalize_line_type(getattr(style, "line_type", None)) if style else None
+        effective_line_type = self._resolve_effective_line_type(obj)
+        layer_name = getattr(obj, "layer_name", "0")
+        layer = self.layer_manager.get_layer(layer_name) if self.layer_manager else None
+        layer_line_type = getattr(layer, "line_type", "Continuous") if layer is not None else "Continuous"
+        layer_color = layer.color.name().upper() if layer is not None and hasattr(layer, "color") else "не задан"
+        thickness_mm = getattr(style, "thickness_mm", None) if style else None
+        dash_length = getattr(style, "dash_length", None) if style else None
+        dash_gap = getattr(style, "dash_gap", None) if style else None
+
+        self.info_label5.setText("Слой / стиль:")
+        self.info_value5.setText(f"{layer_name} / {style_name}")
+        self.info_label6.setText("Тип линии:")
+        self.info_value6.setText(
+            f"{self._line_type_display(raw_line_type)} -> {self._line_type_display(effective_line_type)} "
+            f"(слой: {layer_line_type})"
+        )
+
+        signature = (
+            type(obj).__name__,
+            id(obj),
+            layer_name,
+            style_name,
+            getattr(raw_line_type, "value", raw_line_type),
+            getattr(effective_line_type, "value", effective_line_type),
+        )
+        if signature != self._last_debug_signature:
+            self._append_debug_log(
+                f"{type(obj).__name__}: слой={layer_name}, стиль={style_name}, "
+                f"слой.тип={layer_line_type}, слой.цвет={layer_color}, "
+                f"тип={self._line_type_display(raw_line_type)}, "
+                f"итог={self._line_type_display(effective_line_type)}, "
+                f"толщина={thickness_mm}, штрих={dash_length}, пробел={dash_gap}"
+            )
+            self._last_debug_signature = signature
     
     def _update_line_info(self, line):
         """Обновляет информацию об отрезке"""
@@ -3066,6 +3327,7 @@ class MainWindow(QMainWindow):
         self.info_value3.setText(f"{length:.2f}")
         self.info_label4.setText("Угол наклона:")
         self.info_value4.setText(angle_str)
+        self._update_object_debug_info(line)
     
     def _update_circle_info(self, circle):
         """Обновляет информацию об окружности"""
@@ -3085,6 +3347,7 @@ class MainWindow(QMainWindow):
         self.info_value3.setText(f"{perimeter:.2f}")
         self.info_label4.setText("Площадь:")
         self.info_value4.setText(f"{area:.2f}")
+        self._update_object_debug_info(circle)
     
     def _update_arc_info(self, arc):
         """Обновляет информацию о дуге"""
@@ -3109,6 +3372,7 @@ class MainWindow(QMainWindow):
         self.info_value3.setText(f"Начало: {start_angle:.2f}°, Конец: {end_angle:.2f}°")
         self.info_label4.setText("Длина дуги:")
         self.info_value4.setText(f"{arc_length:.2f}")
+        self._update_object_debug_info(arc)
     
     def _update_rectangle_info(self, rectangle):
         """Обновляет информацию о прямоугольнике"""
@@ -3133,6 +3397,7 @@ class MainWindow(QMainWindow):
         self.info_value3.setText(f"Ширина: {width:.2f}, Высота: {height:.2f}")
         self.info_label4.setText("Площадь:")
         self.info_value4.setText(f"{area:.2f}")
+        self._update_object_debug_info(rectangle)
     
     def _update_ellipse_info(self, ellipse):
         """Обновляет информацию об эллипсе"""
@@ -3154,6 +3419,7 @@ class MainWindow(QMainWindow):
         self.info_value3.setText(f"{perimeter:.2f}")
         self.info_label4.setText("Площадь:")
         self.info_value4.setText(f"{area:.2f}")
+        self._update_object_debug_info(ellipse)
     
     def _update_polygon_info(self, polygon):
         """Обновляет информацию о многоугольнике"""
@@ -3187,6 +3453,7 @@ class MainWindow(QMainWindow):
         self.info_value3.setText(f"{num_vertices}")
         self.info_label4.setText("Периметр:")
         self.info_value4.setText(f"{perimeter:.2f}")
+        self._update_object_debug_info(polygon)
     
     def _update_spline_info(self, spline):
         """Обновляет информацию о сплайне"""
@@ -3215,6 +3482,13 @@ class MainWindow(QMainWindow):
         
         self.info_label1.setText("Количество точек:")
         self.info_value1.setText(f"{num_points}")
+        self.info_label2.setText("Первая точка:")
+        self.info_value2.setText(f"({first_point.x():.2f}, {first_point.y():.2f})")
+        self.info_label3.setText("Последняя точка:")
+        self.info_value3.setText(f"({last_point.x():.2f}, {last_point.y():.2f})")
+        self.info_label4.setText("Длина:")
+        self.info_value4.setText(f"{length:.2f}")
+        self._update_object_debug_info(spline)
     
     def _create_primitive_icon(self, primitive_name: str) -> QIcon:
         """Создает иконку для типа примитива"""
@@ -3293,4 +3567,127 @@ class MainWindow(QMainWindow):
         self.info_value3.setText(f"({last_point.x():.2f}, {last_point.y():.2f})")
         self.info_label4.setText("Длина:")
         self.info_value4.setText(f"{length:.2f}")
-        self.info_value4.setText(f"{length:.2f}")
+
+    def activate_dimension_tool(self):
+        """Активирует режим постановки размеров."""
+        if hasattr(self, 'input_group'):
+            self.input_group.hide()
+        for attr in ('line_method_widget', 'circle_method_widget', 'arc_method_widget',
+                     'rectangle_method_widget', 'ellipse_method_widget'):
+            widget = getattr(self, attr, None)
+            if widget is not None:
+                widget.hide()
+        if hasattr(self, 'dimension_method_widget'):
+            self.dimension_method_widget.show()
+            idx = self.dimension_type_combo.currentIndex()
+            self.change_dimension_type_index(idx)
+        self.canvas.clear_input_points()
+        if hasattr(self.canvas, 'set_primitive_type'):
+            self.canvas.set_primitive_type('dimension')
+        if hasattr(self.canvas, 'primitive_type'):
+            self.canvas.primitive_type = 'dimension'
+        if hasattr(self, 'update_info'):
+            self.update_info()
+
+    def deactivate_dimension_tool(self):
+        """Деактивирует режим постановки размеров."""
+        self.canvas.clear_input_points()
+        self.change_primitive_type(self.primitive_combo.currentText())
+
+    def change_dimension_type(self, dimension_name: str):
+        """Переключает тип размерной линии по имени."""
+        names = [
+            "Линейный горизонтальный",
+            "Линейный вертикальный",
+            "Линейный выровненный",
+            "Радиус",
+            "Диаметр",
+            "Угловой",
+        ]
+        index = names.index(dimension_name) if dimension_name in names else 0
+        self.change_dimension_type_index(index)
+
+    def change_dimension_type_index(self, index: int):
+        """Переключает тип размерной линии по индексу."""
+        keys = ["horizontal", "vertical", "aligned", "radius", "diameter", "angle"]
+        if index < 0 or index >= len(keys):
+            index = 0
+        if hasattr(self, 'dimension_type_combo'):
+            self.dimension_type_combo.blockSignals(True)
+            self.dimension_type_combo.setCurrentIndex(index)
+            self.dimension_type_combo.blockSignals(False)
+        if hasattr(self.canvas, 'set_dimension_creation_type'):
+            self.canvas.set_dimension_creation_type(keys[index])
+        if hasattr(self, 'update_info'):
+            self.update_info()
+
+    # ──────────────────────────────────────────────────────────────────
+    # Экспорт в DXF
+    # ──────────────────────────────────────────────────────────────────
+
+    def export_to_dxf(self) -> None:
+        """Открывает диалог сохранения и экспортирует сцену в DXF."""
+        filepath, _ = QFileDialog.getSaveFileName(
+            self,
+            "Экспорт в DXF",
+            "чертёж.dxf",
+            "DXF Files (*.dxf);;All Files (*)",
+        )
+        if not filepath:
+            return
+        if not filepath.lower().endswith(".dxf"):
+            filepath += ".dxf"
+
+        try:
+            from export.dxf_exporter import DXFExporter
+            objects = self.canvas.scene.get_objects()
+            exporter = DXFExporter(layer_manager=self.layer_manager)
+            exporter.export(objects, filepath)
+            QMessageBox.information(
+                self, "Экспорт завершён",
+                f"Файл сохранён:\n{filepath}\n\nОбъектов экспортировано: {len(objects)}"
+            )
+        except Exception as exc:
+            QMessageBox.critical(
+                self, "Ошибка экспорта",
+                f"Не удалось экспортировать файл:\n{exc}"
+            )
+
+    # ──────────────────────────────────────────────────────────────────
+    # Управление слоями
+    # ──────────────────────────────────────────────────────────────────
+
+    def open_layer_dialog(self) -> None:
+        """Открывает менеджер слоёв."""
+        from ui.layer_dialog import LayerDialog
+        dlg = LayerDialog(self.layer_manager, parent=self)
+        dlg.exec()
+        self.canvas.update()
+
+    def assign_layer_to_selected(self) -> None:
+        """Назначает текущий слой всем выделенным объектам."""
+        selected = self.canvas.selection_manager.get_selected_objects()
+        if not selected:
+            QMessageBox.information(self, "Нет выделения", "Сначала выделите объекты.")
+            return
+
+        layer_names = self.layer_manager.get_layer_names()
+        current = self.layer_manager.current_layer_name
+
+        from PySide6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getItem(
+            self,
+            "Назначить слой",
+            "Выберите слой для выделенных объектов:",
+            layer_names,
+            layer_names.index(current) if current in layer_names else 0,
+            False,
+        )
+        if not ok:
+            return
+        for obj in selected:
+            obj.layer_name = name
+        self.canvas.update()
+        self.statusBar().showMessage(
+            f"Слой «{name}» назначен {len(selected)} объект(ам).", 3000
+        )

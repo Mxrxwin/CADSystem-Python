@@ -7,17 +7,60 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QCombo
                                QDialogButtonBox, QLineEdit, QCheckBox, QStyledItemDelegate,
                                QToolTip, QStyleOptionViewItem, QFrame, QApplication)
 from PySide6.QtCore import Qt, Signal, QSize, QEvent, QPoint, QRect, QTimer, QPointF
-from PySide6.QtGui import QPainter, QPen, QColor, QPixmap, QHelpEvent, QPainterPath, QScreen
+from PySide6.QtGui import QPainter, QPen, QColor, QPixmap, QHelpEvent, QPainterPath, QScreen, QIcon
 import math
 
 from widgets.line_style import LineStyleManager, LineType
 
+_LAYER_LINETYPE_TO_STYLE = {
+    "CONTINUOUS": LineType.SOLID_MAIN,
+    "CAD_DASHED": LineType.DASHED,
+    "DASHED": LineType.DASHED,
+    "CAD_CENTER": LineType.DASH_DOT_THICK,
+    "CENTER": LineType.DASH_DOT_THICK,
+    "CAD_DASHDOT": LineType.DASH_DOT_THIN,
+    "DASHDOT": LineType.DASH_DOT_THIN,
+    "CAD_PHANTOM": LineType.DASH_DOT_TWO_DOTS,
+    "DASHDOT2": LineType.DASH_DOT_TWO_DOTS,
+    "PHANTOM": LineType.DASH_DOT_TWO_DOTS,
+}
+
+
+def _normalize_line_type(value):
+    if isinstance(value, LineType):
+        return value
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    for line_type in LineType:
+        if text == line_type.value or text.upper() == line_type.name:
+            return line_type
+    return None
+
+
+def _resolve_preview_line_type(style, layer_manager=None):
+    line_type = _normalize_line_type(getattr(style, "line_type", None))
+    if line_type != LineType.BY_LAYER:
+        return line_type
+
+    if layer_manager is None:
+        return LineType.SOLID_MAIN
+
+    layer = layer_manager.get_current_layer() if hasattr(layer_manager, "get_current_layer") else None
+    layer_linetype = getattr(layer, "line_type", "Continuous") if layer is not None else "Continuous"
+    return _LAYER_LINETYPE_TO_STYLE.get(str(layer_linetype).strip().upper(), LineType.SOLID_MAIN)
+
 
 class StylePreviewWidget(QWidget):
     """Виджет для отображения превью стиля линии"""
-    def __init__(self, style=None, width=100, height=20, parent=None):
+    def __init__(self, style=None, width=100, height=20, layer_manager=None, parent=None):
         super().__init__(parent)
         self.style = style
+        self.layer_manager = layer_manager
         self.preview_width = width
         self.preview_height = height
         self.setFixedSize(width, height)
@@ -34,7 +77,8 @@ class StylePreviewWidget(QWidget):
         painter.fillRect(self.rect(), Qt.white)
         
         if self.style:
-            pen = self.style.get_pen()
+            line_type = _resolve_preview_line_type(self.style, self.layer_manager)
+            pen = self.style.get_pen(line_type_override=line_type)
             painter.setPen(pen)
             
             # Рисуем линию в зависимости от типа
@@ -45,7 +89,6 @@ class StylePreviewWidget(QWidget):
             start_point = QPointF(start_x, y)
             end_point = QPointF(end_x, y)
             
-            line_type = self.style.line_type
             if line_type == LineType.SOLID_WAVY:
                 self._draw_wavy_line(painter, start_point, end_point, pen)
             elif line_type == LineType.SOLID_THIN_BROKEN:
@@ -308,7 +351,7 @@ class StylePreviewWidget(QWidget):
         dot_length = dot_length_mm * scale_factor
         
         # Определяем тип линии для количества точек
-        if self.style and self.style.line_type == LineType.DASH_DOT_TWO_DOTS:
+        if _resolve_preview_line_type(self.style, self.layer_manager) == LineType.DASH_DOT_TWO_DOTS:
             pattern = [dash_length, dash_gap, dot_length, dash_gap, dot_length, dash_gap]
         else:
             pattern = [dash_length, dash_gap, dot_length, dash_gap]
@@ -348,9 +391,10 @@ class StylePreviewWidget(QWidget):
 
 class StyleTooltipWidget(QFrame):
     """Виджет tooltip с превью стиля линии"""
-    def __init__(self, style, parent=None):
+    def __init__(self, style, layer_manager=None, parent=None):
         super().__init__(parent)
         self.style = style
+        self.layer_manager = layer_manager
         self.setWindowFlags(Qt.ToolTip | Qt.FramelessWindowHint)
         # Убираем прозрачный фон, используем белый
         self.setStyleSheet("""
@@ -371,11 +415,11 @@ class StyleTooltipWidget(QFrame):
         layout.addWidget(name_label)
         
         # Превью линии
-        preview = StylePreviewWidget(style, 250, 50)
+        preview = StylePreviewWidget(style, 250, 50, layer_manager=self.layer_manager)
         layout.addWidget(preview)
         
         # Информация о типе
-        type_label = QLabel(f"Тип: {style.line_type.name}")
+        type_label = QLabel(f"Тип: {style.line_type.display_name}")
         type_label.setStyleSheet("color: #666; font-size: 10px;")
         layout.addWidget(type_label)
         
@@ -385,9 +429,10 @@ class StyleTooltipWidget(QFrame):
 
 class StyleComboBoxDelegate(QStyledItemDelegate):
     """Делегат для ComboBox с tooltip превью при наведении"""
-    def __init__(self, style_manager, parent=None):
+    def __init__(self, style_manager, layer_manager=None, parent=None):
         super().__init__(parent)
         self.style_manager = style_manager
+        self.layer_manager = layer_manager
         self.tooltip_widget = None
         self.tooltip_timer = QTimer()
         self.tooltip_timer.setSingleShot(True)
@@ -415,7 +460,7 @@ class StyleComboBoxDelegate(QStyledItemDelegate):
                     self._hide_tooltip()
                     
                     # Создаем новый tooltip виджет
-                    self.tooltip_widget = StyleTooltipWidget(style, view)
+                    self.tooltip_widget = StyleTooltipWidget(style, self.layer_manager, view)
                     
                     # Позиционируем tooltip рядом с курсором
                     pos = event.globalPos()
@@ -462,10 +507,11 @@ class StyleComboBoxDelegate(QStyledItemDelegate):
 
 class StyleComboBox(QComboBox):
     """ComboBox с превью стилей"""
-    def __init__(self, style_manager, parent=None):
+    def __init__(self, style_manager, layer_manager=None, parent=None):
         super().__init__(parent)
         self.style_manager = style_manager
-        self.delegate = StyleComboBoxDelegate(style_manager, self)
+        self.layer_manager = layer_manager
+        self.delegate = StyleComboBoxDelegate(style_manager, layer_manager, self)
         self.setup_combobox()
         
         # Устанавливаем кастомный делегат для tooltip превью
@@ -476,6 +522,11 @@ class StyleComboBox(QComboBox):
             style_manager.style_added.connect(self.refresh_styles)
             style_manager.style_removed.connect(self.refresh_styles)
             style_manager.style_changed.connect(self.refresh_styles)
+        if layer_manager:
+            layer_manager.layer_added.connect(lambda _: self.refresh_styles())
+            layer_manager.layer_removed.connect(lambda _: self.refresh_styles())
+            layer_manager.layer_changed.connect(lambda _: self.refresh_styles())
+            layer_manager.current_changed.connect(lambda _: self.refresh_styles())
     
     def showPopup(self):
         """Переопределяем для установки обработчика событий на view"""
@@ -511,27 +562,15 @@ class StyleComboBox(QComboBox):
             self.addItem(style.name, style.name)
             # Сохраняем имя стиля в UserRole для делегата
             self.setItemData(self.count() - 1, style.name, Qt.UserRole)
-            # Создаем превью для каждого стиля
-            preview = StylePreviewWidget(style, 80, 16)
-            pixmap = QPixmap(80, 16)
-            pixmap.fill(Qt.white)
-            preview.render(pixmap)
             self.setItemIcon(self.count() - 1, self._create_icon_from_style(style))
     
     def _create_icon_from_style(self, style):
         """Создает иконку из стиля"""
         pixmap = QPixmap(80, 16)
         pixmap.fill(Qt.white)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.Antialiasing)
-        
-        if style:
-            pen = style.get_pen()
-            painter.setPen(pen)
-            painter.drawLine(5, 8, 75, 8)
-        
-        painter.end()
-        return pixmap
+        preview = StylePreviewWidget(style, 80, 16, layer_manager=self.layer_manager)
+        preview.render(pixmap)
+        return QIcon(pixmap)
     
     def refresh_styles(self):
         """Обновляет список стилей"""
@@ -554,9 +593,10 @@ class ObjectPropertiesPanel(QGroupBox):
     """Панель свойств объекта"""
     style_changed = Signal(object)  # Сигнал при изменении стиля
     
-    def __init__(self, style_manager, parent=None):
+    def __init__(self, style_manager, layer_manager=None, parent=None):
         super().__init__("Свойства объекта", parent)
         self.style_manager = style_manager
+        self.layer_manager = layer_manager
         self.selected_objects = []
         self.canvas = None  # Будет установлен извне
         self.init_ui()
@@ -568,7 +608,7 @@ class ObjectPropertiesPanel(QGroupBox):
         style_label = QLabel("Стиль линии:")
         layout.addWidget(style_label)
         
-        self.style_combo = StyleComboBox(self.style_manager)
+        self.style_combo = StyleComboBox(self.style_manager, self.layer_manager)
         self.style_combo.currentIndexChanged.connect(self.on_style_changed)
         layout.addWidget(self.style_combo)
         
@@ -649,9 +689,10 @@ class ObjectPropertiesPanel(QGroupBox):
 
 class StyleManagementPanel(QGroupBox):
     """Панель управления стилями"""
-    def __init__(self, style_manager, parent=None):
+    def __init__(self, style_manager, layer_manager=None, parent=None):
         super().__init__("Управление стилями", parent)
         self.style_manager = style_manager
+        self.layer_manager = layer_manager
         self.init_ui()
         
         # Подключаем сигналы
@@ -659,6 +700,11 @@ class StyleManagementPanel(QGroupBox):
             style_manager.style_added.connect(self.refresh_list)
             style_manager.style_removed.connect(self.refresh_list)
             style_manager.style_changed.connect(self.refresh_list)
+        if layer_manager:
+            layer_manager.layer_added.connect(lambda _: self.refresh_list())
+            layer_manager.layer_removed.connect(lambda _: self.refresh_list())
+            layer_manager.layer_changed.connect(lambda _: self.refresh_list())
+            layer_manager.current_changed.connect(lambda _: self.refresh_list())
     
     def init_ui(self):
         layout = QVBoxLayout()
@@ -699,7 +745,7 @@ class StyleManagementPanel(QGroupBox):
             item.setData(Qt.UserRole, style.name)
             
             # Создаем превью
-            preview = StylePreviewWidget(style, 100, 20)
+            preview = StylePreviewWidget(style, 100, 20, layer_manager=self.layer_manager)
             pixmap = QPixmap(100, 20)
             pixmap.fill(Qt.white)
             preview.render(pixmap)
@@ -715,16 +761,9 @@ class StyleManagementPanel(QGroupBox):
         """Создает иконку из стиля"""
         pixmap = QPixmap(100, 20)
         pixmap.fill(Qt.white)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.Antialiasing)
-        
-        if style:
-            pen = style.get_pen()
-            painter.setPen(pen)
-            painter.drawLine(5, 10, 95, 10)
-        
-        painter.end()
-        return pixmap
+        preview = StylePreviewWidget(style, 100, 20, layer_manager=self.layer_manager)
+        preview.render(pixmap)
+        return QIcon(pixmap)
     
     def on_style_selected(self, item):
         """Обработчик выбора стиля"""
@@ -747,13 +786,13 @@ class StyleManagementPanel(QGroupBox):
         if not style:
             return
         
-        dialog = StyleEditDialog(style, self.style_manager, self)
+        dialog = StyleEditDialog(style, self.style_manager, self.layer_manager, self)
         if dialog.exec() == QDialog.Accepted:
             self.refresh_list()
     
     def create_style(self):
         """Создает новый стиль"""
-        dialog = StyleEditDialog(None, self.style_manager, self)
+        dialog = StyleEditDialog(None, self.style_manager, self.layer_manager, self)
         if dialog.exec() == QDialog.Accepted:
             self.refresh_list()
     
@@ -788,10 +827,11 @@ class StyleManagementPanel(QGroupBox):
 
 class StyleEditDialog(QDialog):
     """Диалог редактирования стиля"""
-    def __init__(self, style=None, style_manager=None, parent=None):
+    def __init__(self, style=None, style_manager=None, layer_manager=None, parent=None):
         super().__init__(parent)
         self.style = style
         self.style_manager = style_manager
+        self.layer_manager = layer_manager
         self.is_new = style is None
         self.init_ui()
     
@@ -810,7 +850,7 @@ class StyleEditDialog(QDialog):
         # Тип линии
         self.type_combo = QComboBox()
         for line_type in LineType:
-            self.type_combo.addItem(line_type.name, line_type)
+            self.type_combo.addItem(line_type.display_name, line_type)
         if self.style:
             index = self.type_combo.findData(self.style.line_type)
             if index >= 0:
@@ -903,7 +943,7 @@ class StyleEditDialog(QDialog):
         layout.addRow(self.wavy_amplitude_label, self.wavy_amplitude_spin)
         
         # Превью
-        self.preview_widget = StylePreviewWidget(None, 200, 30)
+        self.preview_widget = StylePreviewWidget(None, 200, 30, layer_manager=self.layer_manager)
         layout.addRow("Превью:", self.preview_widget)
         
         # Кнопки

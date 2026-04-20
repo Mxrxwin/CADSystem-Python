@@ -13,7 +13,53 @@ if TYPE_CHECKING:
     from core.scene import Scene
     from core.selection import SelectionManager
 from widgets.line_segment import LineSegment
-from widgets.line_style import LineType
+from widgets.line_style import LineType, normalize_line_type
+
+_ACTIVE_LAYER_MANAGER = None
+
+_LAYER_LINETYPE_TO_STYLE = {
+    "CONTINUOUS": LineType.SOLID_MAIN,
+    "CAD_DASHED": LineType.DASHED,
+    "DASHED": LineType.DASHED,
+    "CAD_CENTER": LineType.DASH_DOT_THICK,
+    "CENTER": LineType.DASH_DOT_THICK,
+    "CAD_DASHDOT": LineType.DASH_DOT_THIN,
+    "DASHDOT": LineType.DASH_DOT_THIN,
+    "CAD_PHANTOM": LineType.DASH_DOT_TWO_DOTS,
+    "DASHDOT2": LineType.DASH_DOT_TWO_DOTS,
+    "PHANTOM": LineType.DASH_DOT_TWO_DOTS,
+}
+
+
+def _effective_color(obj, fallback_color=None):
+    if _ACTIVE_LAYER_MANAGER is not None:
+        layer_name = getattr(obj, "layer_name", "0")
+        layer = _ACTIVE_LAYER_MANAGER.get_layer(layer_name)
+        layer_color = getattr(layer, "color", None) if layer is not None else None
+        if isinstance(layer_color, QColor) and layer_color.isValid():
+            return QColor(layer_color)
+
+    if isinstance(fallback_color, QColor) and fallback_color.isValid():
+        return QColor(fallback_color)
+
+    return QColor(0, 0, 0)
+
+
+def _effective_line_type(obj, style):
+    if style is None:
+        return None
+
+    line_type = normalize_line_type(getattr(style, "line_type", None))
+    if line_type != LineType.BY_LAYER:
+        return line_type
+
+    if _ACTIVE_LAYER_MANAGER is None:
+        return LineType.SOLID_MAIN
+
+    layer_name = getattr(obj, "layer_name", "0")
+    layer = _ACTIVE_LAYER_MANAGER.get_layer(layer_name)
+    layer_linetype = getattr(layer, "line_type", "Continuous") if layer is not None else "Continuous"
+    return _LAYER_LINETYPE_TO_STYLE.get(str(layer_linetype).strip().upper(), LineType.SOLID_MAIN)
 
 
 class LineRenderer:
@@ -27,18 +73,15 @@ class LineRenderer:
         old_brush = painter.brush()
         
         if line.style:
-            pen = line.style.get_pen(scale_factor=scale_factor)
-            # Если у линии есть legacy цвет, используем его вместо цвета стиля
-            if hasattr(line, '_legacy_color') and line._legacy_color != line.style.color:
-                pen.setColor(line._legacy_color)
+            line_type = _effective_line_type(line, line.style)
+            pen = line.style.get_pen(scale_factor=scale_factor, line_type_override=line_type)
+            pen.setColor(_effective_color(line, pen.color()))
             # Если линия выделена, делаем её более заметной
             if is_selected:
                 pen.setWidthF(pen.widthF() * 1.5)
                 color = pen.color()
                 color.setAlpha(255)
                 pen.setColor(color)
-            
-            line_type = line.style.line_type
             
             # Устанавливаем brush перед отрисовкой линии
             painter.setBrush(Qt.NoBrush)
@@ -51,14 +94,16 @@ class LineRenderer:
             elif line_type == LineType.DASHED:
                 LineRenderer._draw_dashed_line(painter, line.start_point, line.end_point, pen, line.style)
             elif line_type in [LineType.DASH_DOT_THICK, LineType.DASH_DOT_THIN, LineType.DASH_DOT_TWO_DOTS]:
-                LineRenderer._draw_dash_dot_line(painter, line.start_point, line.end_point, pen, line.style)
+                LineRenderer._draw_dash_dot_line(
+                    painter, line.start_point, line.end_point, pen, line.style, line_type
+                )
             else:
                 # Обычные сплошные линии
                 painter.setPen(pen)
                 painter.drawLine(line.start_point, line.end_point)
         else:
             # Обратная совместимость - используем старый способ
-            pen = QPen(line.color, line.width)
+            pen = QPen(_effective_color(line, getattr(line, "color", None)), line.width)
             if is_selected:
                 pen.setWidthF(pen.widthF() * 1.5)
             painter.setPen(pen)
@@ -70,8 +115,8 @@ class LineRenderer:
         if is_selected:
             painter.setBrush(QColor(0, 100, 255))  # Синий для выделенных
         else:
-            # Используем цвет линии для точек
-            point_color = line.color if hasattr(line, 'color') else QColor(0, 0, 0)
+            # Используем эффективный цвет линии для точек
+            point_color = _effective_color(line, getattr(line, "color", None))
             painter.setBrush(point_color)
         point_size = max(2, 4 / scale_factor)  # минимальный размер точки
         painter.drawEllipse(line.start_point, point_size, point_size)
@@ -314,8 +359,10 @@ class LineRenderer:
             current_pos += dash_length + dash_gap
     
     @staticmethod
-    def _draw_dash_dot_line(painter: QPainter, start_point: QPointF, end_point: QPointF, 
-                           pen: QPen, style):
+    def _draw_dash_dot_line(
+        painter: QPainter, start_point: QPointF, end_point: QPointF,
+        pen: QPen, style, line_type
+    ):
         """Отрисовывает штрихпунктирную линию вручную"""
         dx = end_point.x() - start_point.x()
         dy = end_point.y() - start_point.y()
@@ -328,7 +375,7 @@ class LineRenderer:
         dash_gap = style.dash_gap
         dot_length = style.thickness_mm * 0.5
         
-        if style.line_type == LineType.DASH_DOT_TWO_DOTS:
+        if line_type == LineType.DASH_DOT_TWO_DOTS:
             pattern = [dash_length, dash_gap, dot_length, dash_gap, dot_length, dash_gap]
         else:
             pattern = [dash_length, dash_gap, dot_length, dash_gap]
@@ -448,16 +495,14 @@ class PrimitiveRenderer:
         from widgets.primitives import Circle
         
         if circle.style:
-            pen = circle.style.get_pen(scale_factor=scale_factor)
-            if hasattr(circle, '_legacy_color') and circle._legacy_color != circle.style.color:
-                pen.setColor(circle._legacy_color)
+            line_type = _effective_line_type(circle, circle.style)
+            pen = circle.style.get_pen(scale_factor=scale_factor, line_type_override=line_type)
+            pen.setColor(_effective_color(circle, pen.color()))
             if is_selected:
                 pen.setWidthF(pen.widthF() * 1.5)
                 color = pen.color()
                 color.setAlpha(255)
                 pen.setColor(color)
-            
-            line_type = circle.style.line_type
             
             # Для специальных типов линий используем специальную отрисовку
             if line_type == LineType.SOLID_WAVY:
@@ -467,14 +512,14 @@ class PrimitiveRenderer:
             elif line_type == LineType.DASHED:
                 PrimitiveRenderer._draw_dashed_circle(painter, circle, pen, circle.style)
             elif line_type in [LineType.DASH_DOT_THICK, LineType.DASH_DOT_THIN, LineType.DASH_DOT_TWO_DOTS]:
-                PrimitiveRenderer._draw_dash_dot_circle(painter, circle, pen, circle.style)
+                PrimitiveRenderer._draw_dash_dot_circle(painter, circle, pen, circle.style, line_type)
             else:
                 # Обычные сплошные линии
                 painter.setPen(pen)
                 painter.setBrush(Qt.NoBrush)
                 painter.drawEllipse(circle.center, circle.radius, circle.radius)
         else:
-            pen = QPen(circle.color, circle.width)
+            pen = QPen(_effective_color(circle, getattr(circle, "color", None)), circle.width)
             if is_selected:
                 pen.setWidthF(pen.widthF() * 1.5)
             painter.setPen(pen)
@@ -487,16 +532,14 @@ class PrimitiveRenderer:
         import math
         
         if arc.style:
-            pen = arc.style.get_pen(scale_factor=scale_factor)
-            if hasattr(arc, '_legacy_color') and arc._legacy_color != arc.style.color:
-                pen.setColor(arc._legacy_color)
+            line_type = _effective_line_type(arc, arc.style)
+            pen = arc.style.get_pen(scale_factor=scale_factor, line_type_override=line_type)
+            pen.setColor(_effective_color(arc, pen.color()))
             if is_selected:
                 pen.setWidthF(pen.widthF() * 1.5)
                 color = pen.color()
                 color.setAlpha(255)
                 pen.setColor(color)
-            
-            line_type = arc.style.line_type
             
             # Для специальных типов линий используем специальную отрисовку
             if line_type == LineType.SOLID_WAVY:
@@ -506,12 +549,12 @@ class PrimitiveRenderer:
             elif line_type == LineType.DASHED:
                 PrimitiveRenderer._draw_dashed_arc(painter, arc, pen, arc.style)
             elif line_type in [LineType.DASH_DOT_THICK, LineType.DASH_DOT_THIN, LineType.DASH_DOT_TWO_DOTS]:
-                PrimitiveRenderer._draw_dash_dot_arc(painter, arc, pen, arc.style)
+                PrimitiveRenderer._draw_dash_dot_arc(painter, arc, pen, arc.style, line_type)
             else:
                 # Обычные сплошные линии
                 PrimitiveRenderer._draw_ellipse_arc(painter, arc, pen)
         else:
-            pen = QPen(arc.color, arc.width)
+            pen = QPen(_effective_color(arc, getattr(arc, "color", None)), arc.width)
             if is_selected:
                 pen.setWidthF(pen.widthF() * 1.5)
             PrimitiveRenderer._draw_ellipse_arc(painter, arc, pen)
@@ -520,16 +563,14 @@ class PrimitiveRenderer:
     def draw_rectangle(painter: QPainter, rectangle, scale_factor: float = 1.0, is_selected: bool = False):
         """Отрисовывает прямоугольник с поддержкой всех типов линий"""
         if rectangle.style:
-            pen = rectangle.style.get_pen(scale_factor=scale_factor)
-            if hasattr(rectangle, '_legacy_color') and rectangle._legacy_color != rectangle.style.color:
-                pen.setColor(rectangle._legacy_color)
+            line_type = _effective_line_type(rectangle, rectangle.style)
+            pen = rectangle.style.get_pen(scale_factor=scale_factor, line_type_override=line_type)
+            pen.setColor(_effective_color(rectangle, pen.color()))
             if is_selected:
                 pen.setWidthF(pen.widthF() * 1.5)
                 color = pen.color()
                 color.setAlpha(255)
                 pen.setColor(color)
-            
-            line_type = rectangle.style.line_type
             
             # Для специальных типов линий используем специальную отрисовку
             # Эти методы сами обрабатывают скругленные углы
@@ -540,7 +581,9 @@ class PrimitiveRenderer:
             elif line_type == LineType.DASHED:
                 PrimitiveRenderer._draw_dashed_rectangle(painter, rectangle, pen, rectangle.style)
             elif line_type in [LineType.DASH_DOT_THICK, LineType.DASH_DOT_THIN, LineType.DASH_DOT_TWO_DOTS]:
-                PrimitiveRenderer._draw_dash_dot_rectangle(painter, rectangle, pen, rectangle.style)
+                PrimitiveRenderer._draw_dash_dot_rectangle(
+                    painter, rectangle, pen, rectangle.style, line_type
+                )
             else:
                 # Обычные сплошные линии
                 painter.setPen(pen)
@@ -568,7 +611,7 @@ class PrimitiveRenderer:
                 else:
                     painter.drawRect(rect)
         else:
-            pen = QPen(rectangle.color, rectangle.width)
+            pen = QPen(_effective_color(rectangle, getattr(rectangle, "color", None)), rectangle.width)
             if is_selected:
                 pen.setWidthF(pen.widthF() * 1.5)
             painter.setPen(pen)
@@ -600,16 +643,14 @@ class PrimitiveRenderer:
     def draw_ellipse(painter: QPainter, ellipse, scale_factor: float = 1.0, is_selected: bool = False):
         """Отрисовывает эллипс с поддержкой всех типов линий"""
         if ellipse.style:
-            pen = ellipse.style.get_pen(scale_factor=scale_factor)
-            if hasattr(ellipse, '_legacy_color') and ellipse._legacy_color != ellipse.style.color:
-                pen.setColor(ellipse._legacy_color)
+            line_type = _effective_line_type(ellipse, ellipse.style)
+            pen = ellipse.style.get_pen(scale_factor=scale_factor, line_type_override=line_type)
+            pen.setColor(_effective_color(ellipse, pen.color()))
             if is_selected:
                 pen.setWidthF(pen.widthF() * 1.5)
                 color = pen.color()
                 color.setAlpha(255)
                 pen.setColor(color)
-            
-            line_type = ellipse.style.line_type
             
             # Для специальных типов линий используем специальную отрисовку
             if line_type == LineType.SOLID_WAVY:
@@ -619,12 +660,12 @@ class PrimitiveRenderer:
             elif line_type == LineType.DASHED:
                 PrimitiveRenderer._draw_dashed_ellipse(painter, ellipse, pen, ellipse.style)
             elif line_type in [LineType.DASH_DOT_THICK, LineType.DASH_DOT_THIN, LineType.DASH_DOT_TWO_DOTS]:
-                PrimitiveRenderer._draw_dash_dot_ellipse(painter, ellipse, pen, ellipse.style)
+                PrimitiveRenderer._draw_dash_dot_ellipse(painter, ellipse, pen, ellipse.style, line_type)
             else:
                 # Обычные сплошные линии
                 PrimitiveRenderer._draw_ellipse_with_rotation(painter, ellipse, pen)
         else:
-            pen = QPen(ellipse.color, ellipse.width)
+            pen = QPen(_effective_color(ellipse, getattr(ellipse, "color", None)), ellipse.width)
             if is_selected:
                 pen.setWidthF(pen.widthF() * 1.5)
             PrimitiveRenderer._draw_ellipse_with_rotation(painter, ellipse, pen)
@@ -639,16 +680,14 @@ class PrimitiveRenderer:
             return
         
         if polygon.style:
-            pen = polygon.style.get_pen(scale_factor=scale_factor)
-            if hasattr(polygon, '_legacy_color') and polygon._legacy_color != polygon.style.color:
-                pen.setColor(polygon._legacy_color)
+            line_type = _effective_line_type(polygon, polygon.style)
+            pen = polygon.style.get_pen(scale_factor=scale_factor, line_type_override=line_type)
+            pen.setColor(_effective_color(polygon, pen.color()))
             if is_selected:
                 pen.setWidthF(pen.widthF() * 1.5)
                 color = pen.color()
                 color.setAlpha(255)
                 pen.setColor(color)
-            
-            line_type = polygon.style.line_type
             
             # Для специальных типов линий используем специальную отрисовку
             if line_type == LineType.SOLID_WAVY:
@@ -658,7 +697,7 @@ class PrimitiveRenderer:
             elif line_type == LineType.DASHED:
                 PrimitiveRenderer._draw_dashed_polygon(painter, polygon, pen, polygon.style)
             elif line_type in [LineType.DASH_DOT_THICK, LineType.DASH_DOT_THIN, LineType.DASH_DOT_TWO_DOTS]:
-                PrimitiveRenderer._draw_dash_dot_polygon(painter, polygon, pen, polygon.style)
+                PrimitiveRenderer._draw_dash_dot_polygon(painter, polygon, pen, polygon.style, line_type)
             else:
                 # Обычные сплошные линии
                 path = QPainterPath()
@@ -670,7 +709,7 @@ class PrimitiveRenderer:
                 painter.setBrush(Qt.NoBrush)
                 painter.drawPath(path)
         else:
-            pen = QPen(polygon.color, polygon.width)
+            pen = QPen(_effective_color(polygon, getattr(polygon, "color", None)), polygon.width)
             if is_selected:
                 pen.setWidthF(pen.widthF() * 1.5)
             path = QPainterPath()
@@ -1015,7 +1054,7 @@ class PrimitiveRenderer:
                 break
     
     @staticmethod
-    def _draw_dash_dot_circle(painter: QPainter, circle, pen: QPen, style):
+    def _draw_dash_dot_circle(painter: QPainter, circle, pen: QPen, style, line_type):
         """Отрисовывает штрихпунктирную окружность"""
         import math
         
@@ -1027,7 +1066,7 @@ class PrimitiveRenderer:
         if circumference < 0.1:
             return
         
-        if style.line_type == LineType.DASH_DOT_TWO_DOTS:
+        if line_type == LineType.DASH_DOT_TWO_DOTS:
             pattern = [dash_length, dash_gap, dot_length, dash_gap, dot_length, dash_gap]
         else:
             pattern = [dash_length, dash_gap, dot_length, dash_gap]
@@ -1687,7 +1726,7 @@ class PrimitiveRenderer:
                 LineRenderer._draw_dashed_line(painter, start, end, pen, style)
     
     @staticmethod
-    def _draw_dash_dot_rectangle(painter: QPainter, rectangle, pen: QPen, style):
+    def _draw_dash_dot_rectangle(painter: QPainter, rectangle, pen: QPen, style, line_type):
         """Отрисовывает штрихпунктирный прямоугольник"""
         fillet_radius = getattr(rectangle, 'fillet_radius', 0.0)
         rect = rectangle.get_bounding_box()
@@ -1701,46 +1740,46 @@ class PrimitiveRenderer:
             LineRenderer._draw_dash_dot_line(painter, 
                                            QPointF(rect.x() + r, rect.y()), 
                                            QPointF(rect.x() + w - r, rect.y()), 
-                                           pen, style)
+                                           pen, style, line_type)
             # Верхний правый угол (дуга) - центр в (w - r, r)
             if r > 0:
                 PrimitiveRenderer._draw_dash_dot_arc_segment(painter, 
                     QPointF(rect.x() + w - r, rect.y()), 
                     QPointF(rect.x() + w, rect.y() + r), 
-                    QPointF(rect.x() + w - r, rect.y() + r), r, pen, style)
+                    QPointF(rect.x() + w - r, rect.y() + r), r, pen, style, line_type)
             # Правая сторона
             LineRenderer._draw_dash_dot_line(painter, 
                                            QPointF(rect.x() + w, rect.y() + r), 
                                            QPointF(rect.x() + w, rect.y() + h - r), 
-                                           pen, style)
+                                           pen, style, line_type)
             # Нижний правый угол (дуга) - центр в (w - r, h - r)
             if r > 0:
                 PrimitiveRenderer._draw_dash_dot_arc_segment(painter, 
                     QPointF(rect.x() + w, rect.y() + h - r), 
                     QPointF(rect.x() + w - r, rect.y() + h), 
-                    QPointF(rect.x() + w - r, rect.y() + h - r), r, pen, style)
+                    QPointF(rect.x() + w - r, rect.y() + h - r), r, pen, style, line_type)
             # Нижняя сторона
             LineRenderer._draw_dash_dot_line(painter, 
                                            QPointF(rect.x() + w - r, rect.y() + h), 
                                            QPointF(rect.x() + r, rect.y() + h), 
-                                           pen, style)
+                                           pen, style, line_type)
             # Нижний левый угол (дуга) - центр в (r, h - r)
             if r > 0:
                 PrimitiveRenderer._draw_dash_dot_arc_segment(painter, 
                     QPointF(rect.x() + r, rect.y() + h), 
                     QPointF(rect.x(), rect.y() + h - r), 
-                    QPointF(rect.x() + r, rect.y() + h - r), r, pen, style)
+                    QPointF(rect.x() + r, rect.y() + h - r), r, pen, style, line_type)
             # Левая сторона
             LineRenderer._draw_dash_dot_line(painter, 
                                            QPointF(rect.x(), rect.y() + h - r), 
                                            QPointF(rect.x(), rect.y() + r), 
-                                           pen, style)
+                                           pen, style, line_type)
             # Верхний левый угол (дуга) - центр в (r, r)
             if r > 0:
                 PrimitiveRenderer._draw_dash_dot_arc_segment(painter, 
                     QPointF(rect.x(), rect.y() + r), 
                     QPointF(rect.x() + r, rect.y()), 
-                    QPointF(rect.x() + r, rect.y() + r), r, pen, style)
+                    QPointF(rect.x() + r, rect.y() + r), r, pen, style, line_type)
         else:
             # Обычный прямоугольник без скругления
             bbox = rectangle.get_bounding_box()
@@ -1755,7 +1794,7 @@ class PrimitiveRenderer:
             for i in range(4):
                 start = corners[i]
                 end = corners[(i + 1) % 4]
-                LineRenderer._draw_dash_dot_line(painter, start, end, pen, style)
+                LineRenderer._draw_dash_dot_line(painter, start, end, pen, style, line_type)
     
     @staticmethod
     def _draw_wavy_arc_segment(painter: QPainter, start: QPointF, end: QPointF, center: QPointF, radius: float, pen: QPen):
@@ -2115,7 +2154,10 @@ class PrimitiveRenderer:
             current_angle = dash_end_angle + gap_angle
     
     @staticmethod
-    def _draw_dash_dot_arc_segment(painter: QPainter, start: QPointF, end: QPointF, center: QPointF, radius: float, pen: QPen, style):
+    def _draw_dash_dot_arc_segment(
+        painter: QPainter, start: QPointF, end: QPointF, center: QPointF,
+        radius: float, pen: QPen, style, line_type
+    ):
         """Отрисовывает штрихпунктирную линию вдоль дуги скругленного угла"""
         import math
         from PySide6.QtGui import QPainterPath
@@ -2131,7 +2173,7 @@ class PrimitiveRenderer:
         dash_gap = style.dash_gap
         dot_length = style.thickness_mm * 0.5
         
-        if style.line_type == LineType.DASH_DOT_TWO_DOTS:
+        if line_type == LineType.DASH_DOT_TWO_DOTS:
             pattern = [dash_length, dash_gap, dot_length, dash_gap, dot_length, dash_gap]
         else:
             pattern = [dash_length, dash_gap, dot_length, dash_gap]
@@ -2639,7 +2681,7 @@ class PrimitiveRenderer:
         painter.restore()
     
     @staticmethod
-    def _draw_dash_dot_ellipse(painter: QPainter, ellipse, pen: QPen, style):
+    def _draw_dash_dot_ellipse(painter: QPainter, ellipse, pen: QPen, style, line_type):
         """Отрисовывает штрихпунктирный эллипс с учетом поворота"""
         import math
         from PySide6.QtGui import QTransform
@@ -2677,7 +2719,7 @@ class PrimitiveRenderer:
             painter.restore()
             return
         
-        if style.line_type == LineType.DASH_DOT_TWO_DOTS:
+        if line_type == LineType.DASH_DOT_TWO_DOTS:
             pattern = [dash_length, dash_gap, dot_length, dash_gap, dot_length, dash_gap]
         else:
             pattern = [dash_length, dash_gap, dot_length, dash_gap]
@@ -3142,7 +3184,7 @@ class PrimitiveRenderer:
         painter.restore()
     
     @staticmethod
-    def _draw_dash_dot_arc(painter: QPainter, arc, pen: QPen, style):
+    def _draw_dash_dot_arc(painter: QPainter, arc, pen: QPen, style, line_type):
         """Отрисовывает штрихпунктирную дугу эллипса с учетом поворота"""
         import math
         from PySide6.QtGui import QTransform, QPainterPath
@@ -3175,7 +3217,7 @@ class PrimitiveRenderer:
             painter.restore()
             return
         
-        if style.line_type == LineType.DASH_DOT_TWO_DOTS:
+        if line_type == LineType.DASH_DOT_TWO_DOTS:
             pattern = [dash_length, dash_gap, dot_length, dash_gap, dot_length, dash_gap]
         else:
             pattern = [dash_length, dash_gap, dot_length, dash_gap]
@@ -3307,7 +3349,7 @@ class PrimitiveRenderer:
             LineRenderer._draw_dashed_line(painter, start, end, pen, style)
     
     @staticmethod
-    def _draw_dash_dot_polygon(painter: QPainter, polygon, pen: QPen, style):
+    def _draw_dash_dot_polygon(painter: QPainter, polygon, pen: QPen, style, line_type):
         """Отрисовывает штрихпунктирный многоугольник"""
         vertices = polygon.get_vertices()
         if len(vertices) < 3:
@@ -3317,7 +3359,7 @@ class PrimitiveRenderer:
         for i in range(len(vertices)):
             start = vertices[i]
             end = vertices[(i + 1) % len(vertices)]
-            LineRenderer._draw_dash_dot_line(painter, start, end, pen, style)
+            LineRenderer._draw_dash_dot_line(painter, start, end, pen, style, line_type)
     
     @staticmethod
     def draw_spline(painter: QPainter, spline, scale_factor: float = 1.0, is_selected: bool = False):
@@ -3328,16 +3370,14 @@ class PrimitiveRenderer:
             return
         
         if spline.style:
-            pen = spline.style.get_pen(scale_factor=scale_factor)
-            if hasattr(spline, '_legacy_color') and spline._legacy_color != spline.style.color:
-                pen.setColor(spline._legacy_color)
+            line_type = _effective_line_type(spline, spline.style)
+            pen = spline.style.get_pen(scale_factor=scale_factor, line_type_override=line_type)
+            pen.setColor(_effective_color(spline, pen.color()))
             if is_selected:
                 pen.setWidthF(pen.widthF() * 1.5)
                 color = pen.color()
                 color.setAlpha(255)
                 pen.setColor(color)
-            
-            line_type = spline.style.line_type
             
             # Для специальных типов линий используем специальную отрисовку
             if line_type == LineType.SOLID_WAVY:
@@ -3347,7 +3387,7 @@ class PrimitiveRenderer:
             elif line_type == LineType.DASHED:
                 PrimitiveRenderer._draw_dashed_spline(painter, spline, pen, spline.style)
             elif line_type in [LineType.DASH_DOT_THICK, LineType.DASH_DOT_THIN, LineType.DASH_DOT_TWO_DOTS]:
-                PrimitiveRenderer._draw_dash_dot_spline(painter, spline, pen, spline.style)
+                PrimitiveRenderer._draw_dash_dot_spline(painter, spline, pen, spline.style, line_type)
             else:
                 # Обычные сплошные линии
                 path = QPainterPath()
@@ -3783,7 +3823,7 @@ class PrimitiveRenderer:
                 drawing_dash = True
     
     @staticmethod
-    def _draw_dash_dot_spline(painter: QPainter, spline, pen: QPen, style):
+    def _draw_dash_dot_spline(painter: QPainter, spline, pen: QPen, style, line_type):
         """Отрисовывает штрихпунктирный сплайн вдоль кривой"""
         import math
         
@@ -3818,7 +3858,7 @@ class PrimitiveRenderer:
         dash_gap = style.dash_gap
         dot_length = style.thickness_mm * 0.5
         
-        if style.line_type == LineType.DASH_DOT_TWO_DOTS:
+        if line_type == LineType.DASH_DOT_TWO_DOTS:
             pattern = [dash_length, dash_gap, dot_length, dash_gap, dot_length, dash_gap]
         else:
             pattern = [dash_length, dash_gap, dot_length, dash_gap]
@@ -3874,7 +3914,8 @@ class SceneRenderer:
         self.viewport = viewport
         self.scene = scene
         self.selection_manager = selection_manager
-        
+        self.layer_manager = None  # Устанавливается снаружи после инициализации
+
         # Настройки отрисовки
         self.background_color = QColor(255, 255, 255)
         self.grid_color = QColor(200, 200, 200)
@@ -3883,6 +3924,8 @@ class SceneRenderer:
     
     def draw(self, painter: QPainter):
         """Отрисовывает всю сцену"""
+        global _ACTIVE_LAYER_MANAGER
+        _ACTIVE_LAYER_MANAGER = self.layer_manager
         painter.setRenderHint(QPainter.Antialiasing)
         
         # Фон (рисуем без трансформации)
@@ -3905,6 +3948,12 @@ class SceneRenderer:
         # Объекты сцены
         scale_factor = self.viewport.get_scale()
         for obj in self.scene.get_objects():
+            # Проверка видимости слоя
+            if self.layer_manager is not None:
+                layer_name = getattr(obj, 'layer_name', '0')
+                layer = self.layer_manager.get_layer(layer_name)
+                if layer is not None and not layer.visible:
+                    continue
             is_selected = self.selection_manager.is_selected(obj)
             if isinstance(obj, LineSegment):
                 LineRenderer.draw_line(painter, obj, scale_factor, is_selected)
@@ -4035,4 +4084,3 @@ class SceneRenderer:
     def set_grid_step(self, step_mm: float):
         """Устанавливает шаг сетки в миллиметрах"""
         self.grid_step = step_mm
-
