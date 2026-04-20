@@ -17,7 +17,7 @@ from ui.icons import toolbar_icons
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Построение отрезков в различных системах координат")
+        self.setWindowTitle("CAD")
         # Увеличенный размер окна для комфортного размещения всех элементов
         self.setGeometry(100, 100, 1600, 1000)
         # Устанавливаем минимальный размер, чтобы окно можно было изменять, но не сделать слишком маленьким

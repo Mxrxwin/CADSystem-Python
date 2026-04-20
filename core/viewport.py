@@ -56,17 +56,22 @@ class Viewport:
     
     def zoom_at_point(self, screen_point: QPointF, factor: float):
         """Масштабирование относительно точки с сохранением положения этой точки"""
-        world_point_before = self.screen_to_world(screen_point)
+        # Получаем мировую координату точки под курсором ДО зума
+        world_point = self.screen_to_world(screen_point)
         
         # Применяем масштаб
+        old_scale = self.scale_factor
         self.scale_factor *= factor
         self.scale_factor = max(self.min_scale, min(self.max_scale, self.scale_factor))
         
-        world_point_after = self.screen_to_world(screen_point)
+        # Вычисляем, где теперь эта мировая точка отображается на экране ПОСЛЕ зума
+        screen_point_after = self.world_to_screen(world_point)
         
-        # Корректируем трансляцию для сохранения положения точки
-        delta = world_point_after - world_point_before
-        self.translation += QPointF(delta.x() * self.scale_factor, delta.y() * self.scale_factor)
+        # Вычисляем разницу в экранных координатах между желаемой и текущей позицией
+        delta_screen = screen_point - screen_point_after
+        
+        # Корректируем translation на эту разницу (translation работает в экранных координатах)
+        self.translation += delta_screen
     
     def zoom_in(self, factor: float = 1.2):
         """Увеличивает масштаб"""

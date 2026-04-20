@@ -1181,6 +1181,12 @@ class SnapManager:
             return self._perpendicular_to_arc(line_start, line_end, obj)
         elif isinstance(obj, Ellipse):
             return self._perpendicular_to_ellipse(line_start, line_end, obj)
+        elif isinstance(obj, Rectangle):
+            return self._perpendicular_to_rectangle(line_start, line_end, obj)
+        elif isinstance(obj, Polygon):
+            return self._perpendicular_to_polygon(line_start, line_end, obj)
+        elif isinstance(obj, Spline):
+            return self._perpendicular_to_spline(line_start, line_end, obj)
         
         return None
     
@@ -1583,103 +1589,52 @@ class SnapManager:
     
     def _perpendicular_to_line(self, line_start: QPointF, line_end: QPointF,
                                obj_start: QPointF, obj_end: QPointF) -> Optional[QPointF]:
-        """Находит основание перпендикуляра от линии к отрезку"""
-        # Направление текущей линии
-        line_dx = line_end.x() - line_start.x()
-        line_dy = line_end.y() - line_start.y()
-        line_len_sq = line_dx*line_dx + line_dy*line_dy
-        if line_len_sq < 1e-10:
-            return None
-        
-        # Направление объекта
+        """Находит основание перпендикуляра от начальной точки линии к объекту-линии"""
+        # Направление объекта-линии (к которой привязываемся)
         obj_dx = obj_end.x() - obj_start.x()
         obj_dy = obj_end.y() - obj_start.y()
         obj_len_sq = obj_dx*obj_dx + obj_dy*obj_dy
         if obj_len_sq < 1e-10:
             return None
         
-        # Параметрическое уравнение объекта: obj_start + t * (obj_end - obj_start)
-        # Ищем точку на объекте, такую что линия от этой точки перпендикулярна текущей линии
-        # Условие перпендикулярности: (point - line_point) · line_dir = 0
+        # Нормализуем направление объекта-линии
+        obj_len = math.sqrt(obj_len_sq)
+        obj_dir_x = obj_dx / obj_len
+        obj_dir_y = obj_dy / obj_len
         
-        # Для каждой точки на объекте находим ближайшую точку на текущей линии
-        # и проверяем перпендикулярность
+        # Ищем точку на объекте-линии, такую что линия от line_start до этой точки
+        # перпендикулярна объекту-линии
         
-        # Пробуем несколько точек на объекте и находим ту, которая дает перпендикуляр
-        best_point = None
-        best_angle_diff = float('inf')
+        # Параметрическое уравнение объекта: Q(t) = obj_start + t * (obj_end - obj_start)
+        # Вектор от line_start до Q(t): v = Q(t) - line_start = obj_start + t*obj_dir - line_start
+        # Условие перпендикулярности: v · obj_dir = 0
+        # (obj_start + t*obj_dir - line_start) · obj_dir = 0
+        # (obj_start - line_start) · obj_dir + t*(obj_dir · obj_dir) = 0
+        # (obj_start - line_start) · obj_dir + t = 0  (т.к. obj_dir · obj_dir = 1)
+        # t = -((obj_start - line_start) · obj_dir)
         
-        # Проверяем конечные точки объекта
-        for test_point in [obj_start, obj_end]:
-            # Вектор от точки объекта к ближайшей точке на линии
-            # Ближайшая точка на линии: проекция test_point на линию
-            t_line = ((test_point.x() - line_start.x()) * line_dx + 
-                     (test_point.y() - line_start.y()) * line_dy) / line_len_sq
-            t_line = max(0, min(1, t_line))  # Ограничиваем отрезком
-            
-            closest_on_line = QPointF(
-                line_start.x() + t_line * line_dx,
-                line_start.y() + t_line * line_dy
-            )
-            
-            # Вектор от closest_on_line к test_point
-            perp_dx = test_point.x() - closest_on_line.x()
-            perp_dy = test_point.y() - closest_on_line.y()
-            
-            # Проверяем перпендикулярность (скалярное произведение должно быть близко к 0)
-            dot_product = perp_dx * line_dx + perp_dy * line_dy
-            angle_diff = abs(dot_product)
-            
-            if angle_diff < best_angle_diff:
-                best_angle_diff = angle_diff
-                best_point = test_point
+        diff_x = obj_start.x() - line_start.x()
+        diff_y = obj_start.y() - line_start.y()
         
-        # Также проверяем точку на объекте, которая точно перпендикулярна
-        # Решаем систему: точка на объекте + перпендикулярность
-        # (obj_start + t*obj_dir - line_start - s*line_dir) · line_dir = 0
+        t = -(diff_x * obj_dir_x + diff_y * obj_dir_y)
         
-        # Упрощенный подход: находим точку на объекте, проекция которой на линию
-        # дает минимальное расстояние
+        # Ограничиваем t отрезком [0, 1]
+        t = max(0.0, min(1.0, t))
         
-        # Пробуем точку на объекте, которая ближе всего к перпендикуляру
-        # Используем аналитическое решение
-        denom = line_dx * obj_dy - line_dy * obj_dx
-        if abs(denom) > 1e-10:
-            # Находим параметр t для объекта
-            t = ((line_start.x() - obj_start.x()) * line_dy - 
-                 (line_start.y() - obj_start.y()) * line_dx) / denom
-            
-            # Ограничиваем t отрезком [0, 1]
-            t = max(0, min(1, t))
-            
-            perp_point = QPointF(
-                obj_start.x() + t * obj_dx,
-                obj_start.y() + t * obj_dy
-            )
-            
-            # Проверяем, что это действительно перпендикуляр
-            # Находим ближайшую точку на линии
-            t_line = ((perp_point.x() - line_start.x()) * line_dx + 
-                     (perp_point.y() - line_start.y()) * line_dy) / line_len_sq
-            t_line = max(0, min(1, t_line))
-            
-            closest_on_line = QPointF(
-                line_start.x() + t_line * line_dx,
-                line_start.y() + t_line * line_dy
-            )
-            
-            # Вектор перпендикуляра
-            perp_vec_x = perp_point.x() - closest_on_line.x()
-            perp_vec_y = perp_point.y() - closest_on_line.y()
-            
-            # Проверяем перпендикулярность
-            dot = perp_vec_x * line_dx + perp_vec_y * line_dy
-            if abs(dot) < 0.1:  # Допустимая погрешность
-                return perp_point
+        # Вычисляем точку на объекте
+        perp_point = QPointF(
+            obj_start.x() + t * obj_dx,
+            obj_start.y() + t * obj_dy
+        )
         
-        # Если аналитическое решение не сработало, возвращаем лучшую найденную точку
-        if best_point and best_angle_diff < 0.1:
-            return best_point
+        # Проверяем, что вектор от line_start до perp_point действительно перпендикулярен объекту
+        vec_x = perp_point.x() - line_start.x()
+        vec_y = perp_point.y() - line_start.y()
+        dot = vec_x * obj_dir_x + vec_y * obj_dir_y
+        
+        # Допускаем небольшую погрешность
+        if abs(dot) < 0.01:
+            return perp_point
         
         return None
     
@@ -1810,6 +1765,118 @@ class SnapManager:
                 return None
         
         return perp_point
+    
+    def _perpendicular_to_rectangle(self, line_start: QPointF, line_end: QPointF,
+                                    rectangle: Rectangle) -> Optional[QPointF]:
+        """Находит точку на прямоугольнике, которая является основанием перпендикуляра от линии"""
+        bbox = rectangle.get_bounding_box()
+        sides = [
+            (QPointF(bbox.left(), bbox.top()), QPointF(bbox.right(), bbox.top())),  # top
+            (QPointF(bbox.right(), bbox.top()), QPointF(bbox.right(), bbox.bottom())),  # right
+            (QPointF(bbox.right(), bbox.bottom()), QPointF(bbox.left(), bbox.bottom())),  # bottom
+            (QPointF(bbox.left(), bbox.bottom()), QPointF(bbox.left(), bbox.top()))  # left
+        ]
+        
+        best_point = None
+        best_distance = float('inf')
+        
+        # Проверяем каждую сторону прямоугольника
+        for side_start, side_end in sides:
+            perp_point = self._perpendicular_to_line(line_start, line_end, side_start, side_end)
+            if perp_point:
+                # Проверяем, что точка находится на стороне прямоугольника
+                # Вычисляем параметр t для точки на стороне
+                side_dx = side_end.x() - side_start.x()
+                side_dy = side_end.y() - side_start.y()
+                side_len_sq = side_dx*side_dx + side_dy*side_dy
+                
+                if side_len_sq > 1e-10:
+                    t = ((perp_point.x() - side_start.x()) * side_dx + 
+                         (perp_point.y() - side_start.y()) * side_dy) / side_len_sq
+                    
+                    # Если точка на стороне (с небольшой погрешностью)
+                    if -1e-6 <= t <= 1.0 + 1e-6:
+                        # Вычисляем расстояние от текущей позиции мыши до перпендикуляра
+                        dist = math.sqrt((perp_point.x() - line_end.x())**2 + 
+                                        (perp_point.y() - line_end.y())**2)
+                        if dist < best_distance:
+                            best_distance = dist
+                            best_point = perp_point
+        
+        return best_point
+    
+    def _perpendicular_to_polygon(self, line_start: QPointF, line_end: QPointF,
+                                  polygon: Polygon) -> Optional[QPointF]:
+        """Находит точку на многоугольнике, которая является основанием перпендикуляра от линии"""
+        vertices = polygon.get_vertices()
+        
+        best_point = None
+        best_distance = float('inf')
+        
+        # Проверяем каждую сторону многоугольника
+        for i in range(len(vertices)):
+            p1 = vertices[i]
+            p2 = vertices[(i + 1) % len(vertices)]
+            perp_point = self._perpendicular_to_line(line_start, line_end, p1, p2)
+            if perp_point:
+                # Проверяем, что точка находится на стороне многоугольника
+                side_dx = p2.x() - p1.x()
+                side_dy = p2.y() - p1.y()
+                side_len_sq = side_dx*side_dx + side_dy*side_dy
+                
+                if side_len_sq > 1e-10:
+                    t = ((perp_point.x() - p1.x()) * side_dx + 
+                         (perp_point.y() - p1.y()) * side_dy) / side_len_sq
+                    
+                    # Если точка на стороне (с небольшой погрешностью)
+                    if -1e-6 <= t <= 1.0 + 1e-6:
+                        # Вычисляем расстояние от текущей позиции мыши до перпендикуляра
+                        dist = math.sqrt((perp_point.x() - line_end.x())**2 + 
+                                        (perp_point.y() - line_end.y())**2)
+                        if dist < best_distance:
+                            best_distance = dist
+                            best_point = perp_point
+        
+        return best_point
+    
+    def _perpendicular_to_spline(self, line_start: QPointF, line_end: QPointF,
+                                 spline: Spline) -> Optional[QPointF]:
+        """Находит точку на сплайне, которая является основанием перпендикуляра от линии"""
+        # Аппроксимируем сплайн сегментами и находим перпендикуляр для каждого
+        num_samples = max(50, len(spline.control_points) * 10)
+        
+        best_point = None
+        best_distance = float('inf')
+        
+        prev_point = spline._get_point_on_spline(0)
+        for i in range(1, num_samples + 1):
+            t = i / num_samples if num_samples > 0 else 0
+            curr_point = spline._get_point_on_spline(t)
+            
+            # Проверяем перпендикуляр для этого сегмента
+            perp_point = self._perpendicular_to_line(line_start, line_end, prev_point, curr_point)
+            if perp_point:
+                # Проверяем, что точка находится на сегменте сплайна
+                seg_dx = curr_point.x() - prev_point.x()
+                seg_dy = curr_point.y() - prev_point.y()
+                seg_len_sq = seg_dx*seg_dx + seg_dy*seg_dy
+                
+                if seg_len_sq > 1e-10:
+                    t_seg = ((perp_point.x() - prev_point.x()) * seg_dx + 
+                            (perp_point.y() - prev_point.y()) * seg_dy) / seg_len_sq
+                    
+                    # Если точка на сегменте (с небольшой погрешностью)
+                    if -1e-6 <= t_seg <= 1.0 + 1e-6:
+                        # Вычисляем расстояние от текущей позиции мыши до перпендикуляра
+                        dist = math.sqrt((perp_point.x() - line_end.x())**2 + 
+                                        (perp_point.y() - line_end.y())**2)
+                        if dist < best_distance:
+                            best_distance = dist
+                            best_point = perp_point
+            
+            prev_point = curr_point
+        
+        return best_point
     
     def _tangent_to_circle(self, point: QPointF, center: QPointF, 
                           radius: float) -> List[QPointF]:

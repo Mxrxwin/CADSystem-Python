@@ -190,6 +190,7 @@ class LineRenderer:
         zigzag_count = style.zigzag_count if style and hasattr(style, 'zigzag_count') else 1
         zigzag_count = max(1, int(zigzag_count))  # Минимум 1 зигзаг
         zigzag_step_mm = style.zigzag_step_mm if style and hasattr(style, 'zigzag_step_mm') else 4.0
+        zigzag_adaptive = bool(getattr(style, 'zigzag_adaptive', False)) if style else False
         
         zigzag_height_mm = 3.5
         zigzag_width_mm = 4.0  # Ширина одного зигзага
@@ -197,21 +198,29 @@ class LineRenderer:
         zigzag_height = (zigzag_height_mm * dpi) / 25.4
         zigzag_length_single = (zigzag_width_mm * dpi) / 25.4
         zigzag_step = (zigzag_step_mm * dpi) / 25.4  # Шаг между зигзагами в пикселях
-        
-        # Общая длина области зигзагов: ширина одного зигзага * количество + шаги между ними
-        # Для N зигзагов нужно (N-1) шагов между ними
-        total_zigzag_length = zigzag_length_single * zigzag_count + zigzag_step * (zigzag_count - 1)
-        
-        # Ограничиваем общую длину зигзагов, если они не помещаются
-        if total_zigzag_length > length * 0.9:
-            # Уменьшаем шаг пропорционально
-            max_length = length * 0.9
-            if zigzag_count > 1:
-                zigzag_step = (max_length - zigzag_length_single * zigzag_count) / (zigzag_count - 1)
-                zigzag_step = max(zigzag_step, zigzag_length_single * 0.5)  # Минимальный шаг - половина ширины зигзага
+
+        if zigzag_adaptive and zigzag_count > 1:
+            # justify-between: распределяем расстояние между зигзагами по всей длине
+            if zigzag_length_single * zigzag_count > length:
+                zigzag_length_single = length / zigzag_count
+            zigzag_step = (length - zigzag_length_single * zigzag_count) / (zigzag_count - 1)
+            zigzag_step = max(0.0, zigzag_step)
             total_zigzag_length = zigzag_length_single * zigzag_count + zigzag_step * (zigzag_count - 1)
-        
-        straight_length = (length - total_zigzag_length) / 2
+            straight_length = 0.0
+        else:
+            # Классический режим: используем заданный шаг и оставляем прямые участки по бокам
+            # Общая длина области зигзагов: ширина одного зигзага * количество + шаги между ними
+            total_zigzag_length = zigzag_length_single * zigzag_count + zigzag_step * (zigzag_count - 1)
+
+            # Ограничиваем общую длину зигзагов, если они не помещаются
+            if total_zigzag_length > length * 0.9:
+                max_length = length * 0.9
+                if zigzag_count > 1:
+                    zigzag_step = (max_length - zigzag_length_single * zigzag_count) / (zigzag_count - 1)
+                    zigzag_step = max(zigzag_step, zigzag_length_single * 0.5)
+                total_zigzag_length = zigzag_length_single * zigzag_count + zigzag_step * (zigzag_count - 1)
+
+            straight_length = (length - total_zigzag_length) / 2
         
         cos_angle = math.cos(angle)
         sin_angle = math.sin(angle)
@@ -742,6 +751,7 @@ class PrimitiveRenderer:
         zigzag_count = style.zigzag_count if style and hasattr(style, 'zigzag_count') else 1
         zigzag_count = max(1, int(zigzag_count))
         zigzag_step_mm = style.zigzag_step_mm if style and hasattr(style, 'zigzag_step_mm') else 4.0
+        zigzag_adaptive = bool(getattr(style, 'zigzag_adaptive', False)) if style else False
         
         # Параметры зигзага
         zigzag_height_mm = 3.5
@@ -750,101 +760,175 @@ class PrimitiveRenderer:
         zigzag_height = (zigzag_height_mm * dpi) / 25.4
         zigzag_length_single = (zigzag_width_mm * dpi) / 25.4
         zigzag_step = (zigzag_step_mm * dpi) / 25.4
-        
-        # Общая длина области зигзагов
-        total_zigzag_length = zigzag_length_single * zigzag_count + zigzag_step * (zigzag_count - 1)
-        
-        # Конвертируем в углы
-        total_zigzag_angle = (total_zigzag_length / circumference) * 2 * math.pi
-        if total_zigzag_angle > math.pi * 0.9:
-            total_zigzag_angle = math.pi * 0.9
-            # Пересчитываем шаг
-            if zigzag_count > 1:
-                max_length = circumference * 0.9
-                zigzag_step = (max_length - zigzag_length_single * zigzag_count) / (zigzag_count - 1)
-                zigzag_step = max(zigzag_step, zigzag_length_single * 0.5)
-                total_zigzag_length = zigzag_length_single * zigzag_count + zigzag_step * (zigzag_count - 1)
-                total_zigzag_angle = (total_zigzag_length / circumference) * 2 * math.pi
+
+        if zigzag_adaptive and zigzag_count > 1:
+            # Adaptive (justify-between): распределяем зигзаги РАВНОМЕРНО по всей окружности
+            # Каждый зигзаг + шаг после него занимает равный сегмент окружности
+            segment_angle = 2 * math.pi / zigzag_count  # Угол для одного зигзага + шаг
+            zigzag_length_single_angle = (zigzag_length_single / circumference) * 2 * math.pi
+            # Шаг = остаток от сегмента после вычитания зигзага
+            zigzag_step_angle = segment_angle - zigzag_length_single_angle
+            zigzag_step_angle = max(0.0, zigzag_step_angle)
+            zigzag_step = (zigzag_step_angle / (2 * math.pi)) * circumference
+            # Начинаем с верхней точки (270°), чтобы первый зигзаг был сверху
+            start_zigzag_angle = -math.pi / 2
+            total_zigzag_length = circumference
+            total_zigzag_angle = 2 * math.pi
+        else:
+            # Общая длина области зигзагов
+            total_zigzag_length = zigzag_length_single * zigzag_count + zigzag_step * (zigzag_count - 1)
+
+            # Конвертируем в углы (локализованный участок, остальная окружность гладкая)
+            total_zigzag_angle = (total_zigzag_length / circumference) * 2 * math.pi
+            if total_zigzag_angle > math.pi * 0.9:
+                total_zigzag_angle = math.pi * 0.9
+                # Пересчитываем шаг
+                if zigzag_count > 1:
+                    max_length = circumference * 0.9
+                    zigzag_step = (max_length - zigzag_length_single * zigzag_count) / (zigzag_count - 1)
+                    zigzag_step = max(zigzag_step, zigzag_length_single * 0.5)
+                    total_zigzag_length = zigzag_length_single * zigzag_count + zigzag_step * (zigzag_count - 1)
+                    total_zigzag_angle = (total_zigzag_length / circumference) * 2 * math.pi
+
+            # Угол начала зигзагов (в центре окружности по X-)
+            start_zigzag_angle = math.pi - total_zigzag_angle / 2
         
         zigzag_length_single_angle = (zigzag_length_single / circumference) * 2 * math.pi
         zigzag_step_angle = (zigzag_step / circumference) * 2 * math.pi
         
-        # Угол начала зигзагов (равномерно распределяем по окружности)
-        start_zigzag_angle = math.pi - total_zigzag_angle / 2
-        
         path = QPainterPath()
         
-        # Рисуем первую часть окружности (до зигзагов)
-        num_points_start = max(20, int(start_zigzag_angle / (2 * math.pi) * 100))
-        for i in range(num_points_start + 1):
-            angle = 2 * math.pi * i / num_points_start * (start_zigzag_angle / (2 * math.pi))
-            x = circle.center.x() + circle.radius * math.cos(angle)
-            y = circle.center.y() + circle.radius * math.sin(angle)
-            if i == 0:
-                path.moveTo(x, y)
-            else:
-                path.lineTo(x, y)
-        
-        # Рисуем все зигзаги с шагом между ними
-        current_angle = start_zigzag_angle
-        for z in range(zigzag_count):
-            # Начало зигзага
-            zigzag_start_angle = current_angle
-            zigzag_mid1_angle = current_angle + zigzag_length_single_angle / 3
-            zigzag_mid2_angle = current_angle + 2 * zigzag_length_single_angle / 3
-            zigzag_end_angle = current_angle + zigzag_length_single_angle
+        if zigzag_adaptive:
+            # ADAPTIVE режим: зигзаги равномерно по всей окружности, без остатков
+            # Начинаем с первой точки
+            x0 = circle.center.x() + circle.radius * math.cos(start_zigzag_angle)
+            y0 = circle.center.y() + circle.radius * math.sin(start_zigzag_angle)
+            path.moveTo(x0, y0)
             
-            # Точка начала зигзага
-            p1 = QPointF(
-                circle.center.x() + circle.radius * math.cos(zigzag_start_angle),
-                circle.center.y() + circle.radius * math.sin(zigzag_start_angle)
-            )
-            path.lineTo(p1)
-            
-            # Первая точка зигзага (вверх)
-            p2 = QPointF(
-                circle.center.x() + (circle.radius + zigzag_height / 2) * math.cos(zigzag_mid1_angle),
-                circle.center.y() + (circle.radius + zigzag_height / 2) * math.sin(zigzag_mid1_angle)
-            )
-            path.lineTo(p2)
-            
-            # Вторая точка зигзага (вниз)
-            p3 = QPointF(
-                circle.center.x() + (circle.radius - zigzag_height) * math.cos(zigzag_mid2_angle),
-                circle.center.y() + (circle.radius - zigzag_height) * math.sin(zigzag_mid2_angle)
-            )
-            path.lineTo(p3)
-            
-            # Конец зигзага
-            p4 = QPointF(
-                circle.center.x() + circle.radius * math.cos(zigzag_end_angle),
-                circle.center.y() + circle.radius * math.sin(zigzag_end_angle)
-            )
-            path.lineTo(p4)
-            
-            # Если это не последний зигзаг, добавляем шаг (прямой участок окружности)
-            if z < zigzag_count - 1:
+            current_angle = start_zigzag_angle
+            for z in range(zigzag_count):
+                # Начало зигзага
+                zigzag_start_angle = current_angle
+                zigzag_mid1_angle = current_angle + zigzag_length_single_angle / 3
+                zigzag_mid2_angle = current_angle + 2 * zigzag_length_single_angle / 3
+                zigzag_end_angle = current_angle + zigzag_length_single_angle
+                
+                # Первая точка зигзага (вверх)
+                p2 = QPointF(
+                    circle.center.x() + (circle.radius + zigzag_height / 2) * math.cos(zigzag_mid1_angle),
+                    circle.center.y() + (circle.radius + zigzag_height / 2) * math.sin(zigzag_mid1_angle)
+                )
+                path.lineTo(p2)
+                
+                # Вторая точка зигзага (вниз)
+                p3 = QPointF(
+                    circle.center.x() + (circle.radius - zigzag_height) * math.cos(zigzag_mid2_angle),
+                    circle.center.y() + (circle.radius - zigzag_height) * math.sin(zigzag_mid2_angle)
+                )
+                path.lineTo(p3)
+                
+                # Конец зигзага
+                p4 = QPointF(
+                    circle.center.x() + circle.radius * math.cos(zigzag_end_angle),
+                    circle.center.y() + circle.radius * math.sin(zigzag_end_angle)
+                )
+                path.lineTo(p4)
+                
+                # Переходим к следующему зигзагу через равный сегмент окружности
                 current_angle = zigzag_end_angle + zigzag_step_angle
-                # Рисуем прямой участок окружности между зигзагами
-                num_points_step = max(5, int(zigzag_step_angle / (2 * math.pi) * 20))
+                
+                # Рисуем участок окружности до следующего зигзага (или до начальной точки для последнего)
+                if z < zigzag_count - 1:
+                    next_zigzag_start = current_angle
+                else:
+                    # Последний участок замыкает окружность
+                    next_zigzag_start = start_zigzag_angle + 2 * math.pi
+                
+                # Рисуем плавный переход
+                num_points_step = max(10, int(abs(next_zigzag_start - zigzag_end_angle) / (2 * math.pi) * 100))
                 for i in range(1, num_points_step + 1):
-                    angle = zigzag_end_angle + (zigzag_step_angle * i / num_points_step)
+                    angle = zigzag_end_angle + (next_zigzag_start - zigzag_end_angle) * i / num_points_step
                     x = circle.center.x() + circle.radius * math.cos(angle)
                     y = circle.center.y() + circle.radius * math.sin(angle)
                     path.lineTo(x, y)
+        else:
+            # ОБЫЧНЫЙ режим: зигзаги локализованы в одной области, остальная окружность гладкая
+            # Рисуем первую часть окружности (до зигзагов)
+            if start_zigzag_angle <= 1e-6:
+                x0 = circle.center.x() + circle.radius * math.cos(0.0)
+                y0 = circle.center.y() + circle.radius * math.sin(0.0)
+                path.moveTo(x0, y0)
             else:
-                current_angle = zigzag_end_angle
-        
-        # Рисуем оставшуюся часть окружности
-        end_zigzag_angle = current_angle
-        remaining_angle = 2 * math.pi - end_zigzag_angle
-        if remaining_angle > 0:
-            num_points_end = max(20, int(remaining_angle / (2 * math.pi) * 100))
-            for i in range(1, num_points_end + 1):
-                angle = end_zigzag_angle + (remaining_angle * i / num_points_end)
-                x = circle.center.x() + circle.radius * math.cos(angle)
-                y = circle.center.y() + circle.radius * math.sin(angle)
-                path.lineTo(x, y)
+                num_points_start = max(20, int(start_zigzag_angle / (2 * math.pi) * 100))
+                for i in range(num_points_start + 1):
+                    angle = 2 * math.pi * i / num_points_start * (start_zigzag_angle / (2 * math.pi))
+                    x = circle.center.x() + circle.radius * math.cos(angle)
+                    y = circle.center.y() + circle.radius * math.sin(angle)
+                    if i == 0:
+                        path.moveTo(x, y)
+                    else:
+                        path.lineTo(x, y)
+            
+            # Рисуем все зигзаги с шагом между ними
+            current_angle = start_zigzag_angle
+            for z in range(zigzag_count):
+                # Начало зигзага
+                zigzag_start_angle = current_angle
+                zigzag_mid1_angle = current_angle + zigzag_length_single_angle / 3
+                zigzag_mid2_angle = current_angle + 2 * zigzag_length_single_angle / 3
+                zigzag_end_angle = current_angle + zigzag_length_single_angle
+                
+                # Точка начала зигзага
+                p1 = QPointF(
+                    circle.center.x() + circle.radius * math.cos(zigzag_start_angle),
+                    circle.center.y() + circle.radius * math.sin(zigzag_start_angle)
+                )
+                path.lineTo(p1)
+                
+                # Первая точка зигзага (вверх)
+                p2 = QPointF(
+                    circle.center.x() + (circle.radius + zigzag_height / 2) * math.cos(zigzag_mid1_angle),
+                    circle.center.y() + (circle.radius + zigzag_height / 2) * math.sin(zigzag_mid1_angle)
+                )
+                path.lineTo(p2)
+                
+                # Вторая точка зигзага (вниз)
+                p3 = QPointF(
+                    circle.center.x() + (circle.radius - zigzag_height) * math.cos(zigzag_mid2_angle),
+                    circle.center.y() + (circle.radius - zigzag_height) * math.sin(zigzag_mid2_angle)
+                )
+                path.lineTo(p3)
+                
+                # Конец зигзага
+                p4 = QPointF(
+                    circle.center.x() + circle.radius * math.cos(zigzag_end_angle),
+                    circle.center.y() + circle.radius * math.sin(zigzag_end_angle)
+                )
+                path.lineTo(p4)
+                
+                # Если это не последний зигзаг, добавляем шаг (прямой участок окружности)
+                if z < zigzag_count - 1:
+                    current_angle = zigzag_end_angle + zigzag_step_angle
+                    # Рисуем прямой участок окружности между зигзагами
+                    num_points_step = max(5, int(zigzag_step_angle / (2 * math.pi) * 20))
+                    for i in range(1, num_points_step + 1):
+                        angle = zigzag_end_angle + (zigzag_step_angle * i / num_points_step)
+                        x = circle.center.x() + circle.radius * math.cos(angle)
+                        y = circle.center.y() + circle.radius * math.sin(angle)
+                        path.lineTo(x, y)
+                else:
+                    current_angle = zigzag_end_angle
+            
+            # Рисуем оставшуюся часть окружности
+            end_zigzag_angle = current_angle
+            remaining_angle = 2 * math.pi - end_zigzag_angle
+            if remaining_angle > 1e-6:
+                num_points_end = max(20, int(remaining_angle / (2 * math.pi) * 100))
+                for i in range(1, num_points_end + 1):
+                    angle = end_zigzag_angle + (remaining_angle * i / num_points_end)
+                    x = circle.center.x() + circle.radius * math.cos(angle)
+                    y = circle.center.y() + circle.radius * math.sin(angle)
+                    path.lineTo(x, y)
         
         painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
@@ -1496,11 +1580,39 @@ class PrimitiveRenderer:
                 QPointF(bbox.right(), bbox.bottom()),
                 QPointF(bbox.left(), bbox.bottom())
             ]
-            
-            # Рисуем каждую сторону как линию с изломами
+
+            zigzag_adaptive = bool(getattr(style, 'zigzag_adaptive', False)) if style else False
+            dpi = 96
+            zigzag_width_mm = 4.0
+            zigzag_length_single = (zigzag_width_mm * dpi) / 25.4
+
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+
+            # Рисуем каждую сторону как линию с изломами; в adaptive-режиме чистим углы
             for i in range(4):
                 start = corners[i]
                 end = corners[(i + 1) % 4]
+
+                dx = end.x() - start.x()
+                dy = end.y() - start.y()
+                seg_len = math.sqrt(dx * dx + dy * dy)
+                if seg_len < 1:
+                    continue
+
+                if zigzag_adaptive and seg_len > 1:
+                    pad = min(zigzag_length_single * 0.5, seg_len * 0.2)
+                    if seg_len > 2 * pad + 1:
+                        ux = dx / seg_len
+                        uy = dy / seg_len
+                        inner_start = QPointF(start.x() + ux * pad, start.y() + uy * pad)
+                        inner_end = QPointF(end.x() - ux * pad, end.y() - uy * pad)
+
+                        painter.drawLine(start, inner_start)
+                        LineRenderer._draw_broken_line(painter, inner_start, inner_end, pen, style)
+                        painter.drawLine(inner_end, end)
+                        continue
+
                 LineRenderer._draw_broken_line(painter, start, end, pen, style)
     
     @staticmethod
@@ -2220,6 +2332,7 @@ class PrimitiveRenderer:
         zigzag_count = style.zigzag_count if style and hasattr(style, 'zigzag_count') else 1
         zigzag_count = max(1, int(zigzag_count))
         zigzag_step_mm = style.zigzag_step_mm if style and hasattr(style, 'zigzag_step_mm') else 4.0
+        zigzag_adaptive = bool(getattr(style, 'zigzag_adaptive', False)) if style else False
         
         # Параметры зигзага
         zigzag_height_mm = 3.5
@@ -2228,39 +2341,42 @@ class PrimitiveRenderer:
         zigzag_height = (zigzag_height_mm * dpi) / 25.4
         zigzag_length_single = (zigzag_width_mm * dpi) / 25.4
         zigzag_step = (zigzag_step_mm * dpi) / 25.4
-        
-        # Общая длина области зигзагов
-        total_zigzag_length = zigzag_length_single * zigzag_count + zigzag_step * (zigzag_count - 1)
-        
-        # Конвертируем в углы
-        total_zigzag_angle = (total_zigzag_length / circumference) * 2 * math.pi
-        if total_zigzag_angle > math.pi * 0.9:
-            total_zigzag_angle = math.pi * 0.9
-            if zigzag_count > 1:
-                max_length = circumference * 0.9
-                zigzag_step = (max_length - zigzag_length_single * zigzag_count) / (zigzag_count - 1)
-                zigzag_step = max(zigzag_step, zigzag_length_single * 0.5)
-                total_zigzag_length = zigzag_length_single * zigzag_count + zigzag_step * (zigzag_count - 1)
-                total_zigzag_angle = (total_zigzag_length / circumference) * 2 * math.pi
+
+        if zigzag_adaptive and zigzag_count > 1:
+            # Adaptive (justify-between): распределяем зигзаги РАВНОМЕРНО по всему эллипсу
+            # Каждый зигзаг + шаг после него занимает равный сегмент эллипса
+            segment_angle = 2 * math.pi / zigzag_count  # Угол для одного зигзага + шаг
+            zigzag_length_single_angle = (zigzag_length_single / circumference) * 2 * math.pi
+            # Шаг = остаток от сегмента после вычитания зигзага
+            zigzag_step_angle = segment_angle - zigzag_length_single_angle
+            zigzag_step_angle = max(0.0, zigzag_step_angle)
+            zigzag_step = (zigzag_step_angle / (2 * math.pi)) * circumference
+            # Начинаем с верхней точки (270°), чтобы первый зигзаг был сверху
+            start_zigzag_angle = -math.pi / 2
+            total_zigzag_length = circumference
+            total_zigzag_angle = 2 * math.pi
+        else:
+            # Общая длина области зигзагов
+            total_zigzag_length = zigzag_length_single * zigzag_count + zigzag_step * (zigzag_count - 1)
+
+            # Конвертируем в углы (локализованный участок)
+            total_zigzag_angle = (total_zigzag_length / circumference) * 2 * math.pi
+            if total_zigzag_angle > math.pi * 0.9:
+                total_zigzag_angle = math.pi * 0.9
+                if zigzag_count > 1:
+                    max_length = circumference * 0.9
+                    zigzag_step = (max_length - zigzag_length_single * zigzag_count) / (zigzag_count - 1)
+                    zigzag_step = max(zigzag_step, zigzag_length_single * 0.5)
+                    total_zigzag_length = zigzag_length_single * zigzag_count + zigzag_step * (zigzag_count - 1)
+                    total_zigzag_angle = (total_zigzag_length / circumference) * 2 * math.pi
+
+            # Угол начала зигзагов (в центре эллипса по X-)
+            start_zigzag_angle = math.pi - total_zigzag_angle / 2
         
         zigzag_length_single_angle = (zigzag_length_single / circumference) * 2 * math.pi
         zigzag_step_angle = (zigzag_step / circumference) * 2 * math.pi
         
-        # Угол начала зигзагов (равномерно распределяем по эллипсу)
-        start_zigzag_angle = math.pi - total_zigzag_angle / 2
-        
         path = QPainterPath()
-        
-        # Рисуем первую часть эллипса (до зигзага)
-        num_points_start = max(20, int(start_zigzag_angle / (2 * math.pi) * 100))
-        for i in range(num_points_start + 1):
-            angle = 2 * math.pi * i / num_points_start * (start_zigzag_angle / (2 * math.pi))
-            x = center_offset.x() + ellipse.radius_x * math.cos(angle)
-            y = center_offset.y() + ellipse.radius_y * math.sin(angle)
-            if i == 0:
-                path.moveTo(x, y)
-            else:
-                path.lineTo(x, y)
         
         # Вычисляем нормали для зигзагов
         def get_normal(angle):
@@ -2271,68 +2387,143 @@ class PrimitiveRenderer:
                 return normal_x / normal_length, normal_y / normal_length
             return math.cos(angle), math.sin(angle)
         
-        # Рисуем все зигзаги с шагом между ними
-        current_angle = start_zigzag_angle
-        for z in range(zigzag_count):
-            # Углы для текущего зигзага
-            zigzag_start_angle = current_angle
-            zigzag_mid1_angle = current_angle + zigzag_length_single_angle / 3
-            zigzag_mid2_angle = current_angle + 2 * zigzag_length_single_angle / 3
-            zigzag_end_angle = current_angle + zigzag_length_single_angle
+        if zigzag_adaptive:
+            # ADAPTIVE режим: зигзаги равномерно по всему эллипсу, без остатков
+            # Начинаем с верхней точки (-90°)
+            start_zigzag_angle = -math.pi / 2
+            x0 = center_offset.x() + ellipse.radius_x * math.cos(start_zigzag_angle)
+            y0 = center_offset.y() + ellipse.radius_y * math.sin(start_zigzag_angle)
+            path.moveTo(x0, y0)
             
-            # Точка начала зигзага
-            p1 = QPointF(
-                center_offset.x() + ellipse.radius_x * math.cos(zigzag_start_angle),
-                center_offset.y() + ellipse.radius_y * math.sin(zigzag_start_angle)
-            )
-            path.lineTo(p1)
-            
-            # Первая точка зигзага (вверх)
-            norm1_x, norm1_y = get_normal(zigzag_mid1_angle)
-            p2 = QPointF(
-                center_offset.x() + ellipse.radius_x * math.cos(zigzag_mid1_angle) + (zigzag_height / 2) * norm1_x,
-                center_offset.y() + ellipse.radius_y * math.sin(zigzag_mid1_angle) + (zigzag_height / 2) * norm1_y
-            )
-            path.lineTo(p2)
-            
-            # Вторая точка зигзага (вниз)
-            norm2_x, norm2_y = get_normal(zigzag_mid2_angle)
-            p3 = QPointF(
-                center_offset.x() + ellipse.radius_x * math.cos(zigzag_mid2_angle) - zigzag_height * norm2_x,
-                center_offset.y() + ellipse.radius_y * math.sin(zigzag_mid2_angle) - zigzag_height * norm2_y
-            )
-            path.lineTo(p3)
-            
-            # Конец зигзага
-            p4 = QPointF(
-                center_offset.x() + ellipse.radius_x * math.cos(zigzag_end_angle),
-                center_offset.y() + ellipse.radius_y * math.sin(zigzag_end_angle)
-            )
-            path.lineTo(p4)
-            
-            # Если это не последний зигзаг, добавляем шаг (прямой участок эллипса)
-            if z < zigzag_count - 1:
+            current_angle = start_zigzag_angle
+            for z in range(zigzag_count):
+                # Углы для текущего зигзага
+                zigzag_start_angle = current_angle
+                zigzag_mid1_angle = current_angle + zigzag_length_single_angle / 3
+                zigzag_mid2_angle = current_angle + 2 * zigzag_length_single_angle / 3
+                zigzag_end_angle = current_angle + zigzag_length_single_angle
+                
+                # Первая точка зигзага (вверх)
+                norm1_x, norm1_y = get_normal(zigzag_mid1_angle)
+                p2 = QPointF(
+                    center_offset.x() + ellipse.radius_x * math.cos(zigzag_mid1_angle) + (zigzag_height / 2) * norm1_x,
+                    center_offset.y() + ellipse.radius_y * math.sin(zigzag_mid1_angle) + (zigzag_height / 2) * norm1_y
+                )
+                path.lineTo(p2)
+                
+                # Вторая точка зигзага (вниз)
+                norm2_x, norm2_y = get_normal(zigzag_mid2_angle)
+                p3 = QPointF(
+                    center_offset.x() + ellipse.radius_x * math.cos(zigzag_mid2_angle) - zigzag_height * norm2_x,
+                    center_offset.y() + ellipse.radius_y * math.sin(zigzag_mid2_angle) - zigzag_height * norm2_y
+                )
+                path.lineTo(p3)
+                
+                # Конец зигзага
+                p4 = QPointF(
+                    center_offset.x() + ellipse.radius_x * math.cos(zigzag_end_angle),
+                    center_offset.y() + ellipse.radius_y * math.sin(zigzag_end_angle)
+                )
+                path.lineTo(p4)
+                
+                # Переходим к следующему зигзагу через равный сегмент эллипса
                 current_angle = zigzag_end_angle + zigzag_step_angle
-                # Рисуем прямой участок эллипса между зигзагами
-                num_points_step = max(5, int(zigzag_step_angle / (2 * math.pi) * 20))
+                
+                # Рисуем участок эллипса до следующего зигзага (или до начальной точки для последнего)
+                if z < zigzag_count - 1:
+                    next_zigzag_start = current_angle
+                else:
+                    # Последний участок замыкает эллипс
+                    next_zigzag_start = start_zigzag_angle + 2 * math.pi
+                
+                # Рисуем плавный переход
+                num_points_step = max(10, int(abs(next_zigzag_start - zigzag_end_angle) / (2 * math.pi) * 100))
                 for i in range(1, num_points_step + 1):
-                    angle = zigzag_end_angle + (zigzag_step_angle * i / num_points_step)
+                    angle = zigzag_end_angle + (next_zigzag_start - zigzag_end_angle) * i / num_points_step
                     x = center_offset.x() + ellipse.radius_x * math.cos(angle)
                     y = center_offset.y() + ellipse.radius_y * math.sin(angle)
                     path.lineTo(x, y)
+        else:
+            # ОБЫЧНЫЙ режим: зигзаги локализованы в одной области, остальной эллипс гладкий
+            # Рисуем первую часть эллипса (до зигзагов)
+            if start_zigzag_angle <= 1e-6:
+                x0 = center_offset.x() + ellipse.radius_x * math.cos(0.0)
+                y0 = center_offset.y() + ellipse.radius_y * math.sin(0.0)
+                path.moveTo(x0, y0)
             else:
-                current_angle = zigzag_end_angle
-        
-        end_zigzag_angle = current_angle
-        
-        # Рисуем оставшуюся часть эллипса
-        remaining_angle = 2 * math.pi - end_zigzag_angle
-        num_points_end = max(20, int(remaining_angle / (2 * math.pi) * 100))
-        for i in range(1, num_points_end + 1):
-            angle = end_zigzag_angle + (remaining_angle * i / num_points_end)
-            x = center_offset.x() + ellipse.radius_x * math.cos(angle)
-            y = center_offset.y() + ellipse.radius_y * math.sin(angle)
-            path.lineTo(x, y)
+                num_points_start = max(20, int(start_zigzag_angle / (2 * math.pi) * 100))
+                for i in range(num_points_start + 1):
+                    angle = 2 * math.pi * i / num_points_start * (start_zigzag_angle / (2 * math.pi))
+                    x = center_offset.x() + ellipse.radius_x * math.cos(angle)
+                    y = center_offset.y() + ellipse.radius_y * math.sin(angle)
+                    if i == 0:
+                        path.moveTo(x, y)
+                    else:
+                        path.lineTo(x, y)
+            
+            # Рисуем все зигзаги с шагом между ними
+            current_angle = start_zigzag_angle
+            for z in range(zigzag_count):
+                # Углы для текущего зигзага
+                zigzag_start_angle = current_angle
+                zigzag_mid1_angle = current_angle + zigzag_length_single_angle / 3
+                zigzag_mid2_angle = current_angle + 2 * zigzag_length_single_angle / 3
+                zigzag_end_angle = current_angle + zigzag_length_single_angle
+                
+                # Точка начала зигзага
+                p1 = QPointF(
+                    center_offset.x() + ellipse.radius_x * math.cos(zigzag_start_angle),
+                    center_offset.y() + ellipse.radius_y * math.sin(zigzag_start_angle)
+                )
+                path.lineTo(p1)
+                
+                # Первая точка зигзага (вверх)
+                norm1_x, norm1_y = get_normal(zigzag_mid1_angle)
+                p2 = QPointF(
+                    center_offset.x() + ellipse.radius_x * math.cos(zigzag_mid1_angle) + (zigzag_height / 2) * norm1_x,
+                    center_offset.y() + ellipse.radius_y * math.sin(zigzag_mid1_angle) + (zigzag_height / 2) * norm1_y
+                )
+                path.lineTo(p2)
+                
+                # Вторая точка зигзага (вниз)
+                norm2_x, norm2_y = get_normal(zigzag_mid2_angle)
+                p3 = QPointF(
+                    center_offset.x() + ellipse.radius_x * math.cos(zigzag_mid2_angle) - zigzag_height * norm2_x,
+                    center_offset.y() + ellipse.radius_y * math.sin(zigzag_mid2_angle) - zigzag_height * norm2_y
+                )
+                path.lineTo(p3)
+                
+                # Конец зигзага
+                p4 = QPointF(
+                    center_offset.x() + ellipse.radius_x * math.cos(zigzag_end_angle),
+                    center_offset.y() + ellipse.radius_y * math.sin(zigzag_end_angle)
+                )
+                path.lineTo(p4)
+                
+                # Если это не последний зигзаг, добавляем шаг (прямой участок эллипса)
+                if z < zigzag_count - 1:
+                    current_angle = zigzag_end_angle + zigzag_step_angle
+                    # Рисуем прямой участок эллипса между зигзагами
+                    num_points_step = max(5, int(zigzag_step_angle / (2 * math.pi) * 20))
+                    for i in range(1, num_points_step + 1):
+                        angle = zigzag_end_angle + (zigzag_step_angle * i / num_points_step)
+                        x = center_offset.x() + ellipse.radius_x * math.cos(angle)
+                        y = center_offset.y() + ellipse.radius_y * math.sin(angle)
+                        path.lineTo(x, y)
+                else:
+                    current_angle = zigzag_end_angle
+            
+            end_zigzag_angle = current_angle
+            
+            # Рисуем оставшуюся часть эллипса
+            remaining_angle = 2 * math.pi - end_zigzag_angle
+            if remaining_angle > 1e-6:
+                num_points_end = max(20, int(remaining_angle / (2 * math.pi) * 100))
+                for i in range(1, num_points_end + 1):
+                    angle = end_zigzag_angle + (remaining_angle * i / num_points_end)
+                    x = center_offset.x() + ellipse.radius_x * math.cos(angle)
+                    y = center_offset.y() + ellipse.radius_y * math.sin(angle)
+                    path.lineTo(x, y)
         
         painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
@@ -2648,6 +2839,7 @@ class PrimitiveRenderer:
         zigzag_count = style.zigzag_count if style and hasattr(style, 'zigzag_count') else 1
         zigzag_count = max(1, int(zigzag_count))
         zigzag_step_mm = style.zigzag_step_mm if style and hasattr(style, 'zigzag_step_mm') else 4.0
+        zigzag_adaptive = bool(getattr(style, 'zigzag_adaptive', False)) if style else False
         
         # Параметры зигзага
         zigzag_height_mm = 3.5
@@ -2656,17 +2848,41 @@ class PrimitiveRenderer:
         zigzag_height = (zigzag_height_mm * dpi) / 25.4
         zigzag_length_single = (zigzag_width_mm * dpi) / 25.4
         zigzag_step = (zigzag_step_mm * dpi) / 25.4
-        
-        # Общая длина области зигзагов
-        total_zigzag_length = zigzag_length_single * zigzag_count + zigzag_step * (zigzag_count - 1)
-        
-        # Ограничиваем общую длину зигзагов
-        if total_zigzag_length > arc_length * 0.9:
-            max_length = arc_length * 0.9
-            if zigzag_count > 1:
-                zigzag_step = (max_length - zigzag_length_single * zigzag_count) / (zigzag_count - 1)
-                zigzag_step = max(zigzag_step, zigzag_length_single * 0.5)
-                total_zigzag_length = zigzag_length_single * zigzag_count + zigzag_step * (zigzag_count - 1)
+
+        if zigzag_adaptive and zigzag_count > 1:
+            # Adaptive (justify-between): растягиваем зигзаги с отступами от краёв дуги
+            # Отступ от краёв (чтобы зигзаги не начинались сразу с концов)
+            pad_length = min(zigzag_length_single * 1.5, arc_length * 0.15)
+            available_length = arc_length - 2 * pad_length
+            
+            if available_length > zigzag_length_single * zigzag_count:
+                # Есть достаточно места для всех зигзагов с отступами
+                zigzag_step = (available_length - zigzag_length_single * zigzag_count) / (zigzag_count - 1)
+                zigzag_step = max(0.0, zigzag_step)
+                total_zigzag_length = available_length
+                straight_length = pad_length
+            else:
+                # Мало места - уменьшаем размер зигзагов или убираем отступы
+                if zigzag_length_single * zigzag_count > arc_length:
+                    zigzag_length_single = arc_length / zigzag_count
+                zigzag_step = (arc_length - zigzag_length_single * zigzag_count) / (zigzag_count - 1)
+                zigzag_step = max(0.0, zigzag_step)
+                total_zigzag_length = arc_length
+                straight_length = 0.0
+        else:
+            # Общая длина области зигзагов
+            total_zigzag_length = zigzag_length_single * zigzag_count + zigzag_step * (zigzag_count - 1)
+
+            # Ограничиваем общую длину зигзагов
+            if total_zigzag_length > arc_length * 0.9:
+                max_length = arc_length * 0.9
+                if zigzag_count > 1:
+                    zigzag_step = (max_length - zigzag_length_single * zigzag_count) / (zigzag_count - 1)
+                    zigzag_step = max(zigzag_step, zigzag_length_single * 0.5)
+                    total_zigzag_length = zigzag_length_single * zigzag_count + zigzag_step * (zigzag_count - 1)
+            
+            # Вычисляем отступы от краёв (не adaptive режим - зигзаги в центре)
+            straight_length = (arc_length - total_zigzag_length) / 2
         
         # Конвертируем длину в параметрический угол
         total_zigzag_angle_abs = (total_zigzag_length / arc_length) * angle_span
@@ -2676,17 +2892,21 @@ class PrimitiveRenderer:
         zigzag_length_single_angle = (zigzag_length_single / arc_length) * angle_span
         zigzag_step_angle = (zigzag_step / arc_length) * angle_span
         
-        # Угол начала зигзагов (в середине дуги)
-        mid_angle = arc.start_angle + (-span_angle_deg) / 2
-        start_zigzag_angle = mid_angle - (total_zigzag_angle_abs / angle_span) * (-span_angle_deg) / 2
+        # Угол начала зигзагов (с отступом от начала дуги)
+        straight_angle = (straight_length / arc_length) * angle_span if arc_length > 0 else 0
+        # Направление: если span_angle_deg > 0, то против часовой, иначе по часовой
+        direction = 1 if span_angle_deg >= 0 else -1
+        start_zigzag_angle = arc.start_angle + straight_angle * (-direction)
         
         path = QPainterPath()
         
         # Рисуем первую часть дуги (до зигзага)
         # Определяем, какая точка ближе к началу дуги (с учетом инвертированного направления)
         inverted_span = -span_angle_deg
-        if (inverted_span >= 0 and start_zigzag_angle > arc.start_angle) or \
-           (inverted_span < 0 and start_zigzag_angle < arc.start_angle):
+        if abs(start_zigzag_angle - arc.start_angle) > 0.1 and (
+            (inverted_span >= 0 and start_zigzag_angle > arc.start_angle)
+            or (inverted_span < 0 and start_zigzag_angle < arc.start_angle)
+        ):
             num_points_start = max(10, int(abs(start_zigzag_angle - arc.start_angle) / angle_span * 50))
             for i in range(num_points_start + 1):
                 param_angle_deg = arc.start_angle + (start_zigzag_angle - arc.start_angle) * i / num_points_start
@@ -3033,11 +3253,44 @@ class PrimitiveRenderer:
         vertices = polygon.get_vertices()
         if len(vertices) < 3:
             return
-        
-        # Рисуем каждую сторону как линию с изломами
+
+        zigzag_adaptive = bool(getattr(style, 'zigzag_adaptive', False)) if style else False
+        dpi = 96
+        zigzag_width_mm = 4.0
+        zigzag_length_single = (zigzag_width_mm * dpi) / 25.4
+
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+
+        # Рисуем каждую сторону как линию с изломами; в adaptive-режиме чистим углы (без зигзагов в вершинах)
         for i in range(len(vertices)):
             start = vertices[i]
             end = vertices[(i + 1) % len(vertices)]
+
+            dx = end.x() - start.x()
+            dy = end.y() - start.y()
+            seg_len = math.sqrt(dx * dx + dy * dy)
+            if seg_len < 1:
+                continue
+
+            if zigzag_adaptive and seg_len > 1:
+                # Отступ от углов, чтобы зигзаги НЕ попадали в вершины (минимум 1.5 ширины зигзага)
+                pad = min(zigzag_length_single * 1.5, seg_len * 0.25)
+                # Проверяем, что после отступов останется достаточно места для хотя бы одного зигзага
+                if seg_len > 2 * pad + zigzag_length_single * 1.5:
+                    ux = dx / seg_len
+                    uy = dy / seg_len
+                    inner_start = QPointF(start.x() + ux * pad, start.y() + uy * pad)
+                    inner_end = QPointF(end.x() - ux * pad, end.y() - uy * pad)
+
+                    # Рисуем прямую до начала зигзагов
+                    painter.drawLine(start, inner_start)
+                    # Рисуем зигзаги только на середине стороны
+                    LineRenderer._draw_broken_line(painter, inner_start, inner_end, pen, style)
+                    # Рисуем прямую от конца зигзагов до вершины
+                    painter.drawLine(inner_end, end)
+                    continue
+
             LineRenderer._draw_broken_line(painter, start, end, pen, style)
     
     @staticmethod
@@ -3300,6 +3553,7 @@ class PrimitiveRenderer:
         zigzag_count = style.zigzag_count if style and hasattr(style, 'zigzag_count') else 1
         zigzag_count = max(1, int(zigzag_count))
         zigzag_step_mm = style.zigzag_step_mm if style and hasattr(style, 'zigzag_step_mm') else 4.0
+        zigzag_adaptive = bool(getattr(style, 'zigzag_adaptive', False)) if style else False
         
         # Параметры зигзага
         zigzag_height_mm = 3.5
@@ -3309,22 +3563,27 @@ class PrimitiveRenderer:
         zigzag_length_single = (zigzag_width_mm * dpi) / 25.4
         zigzag_step = (zigzag_step_mm * dpi) / 25.4
         
-        # Общая длина области зигзагов (в миллиметрах)
-        total_zigzag_length_mm = zigzag_length_single * zigzag_count + zigzag_step * (zigzag_count - 1)
-        
-        # Конвертируем в единицы дуги сплайна (используем масштаб 1:1 для сплайнов)
-        # Для сплайнов длина уже в мировых координатах, поэтому используем напрямую
-        total_zigzag_length = total_zigzag_length_mm
-        
-        # Ограничиваем общую длину зигзагов
-        if total_zigzag_length > total_length * 0.9:
-            max_length = total_length * 0.9
-            if zigzag_count > 1:
-                zigzag_step = (max_length - zigzag_length_single * zigzag_count) / (zigzag_count - 1)
-                zigzag_step = max(zigzag_step, zigzag_length_single * 0.5)
-                total_zigzag_length = zigzag_length_single * zigzag_count + zigzag_step * (zigzag_count - 1)
-        
-        straight_length = (total_length - total_zigzag_length) / 2
+        if zigzag_adaptive and zigzag_count > 1:
+            # Adaptive (justify-between): растягиваем зигзаги по всей длине сплайна
+            if zigzag_length_single * zigzag_count > total_length:
+                zigzag_length_single = total_length / zigzag_count
+            zigzag_step = (total_length - zigzag_length_single * zigzag_count) / (zigzag_count - 1)
+            zigzag_step = max(0.0, zigzag_step)
+            total_zigzag_length = total_length
+            straight_length = 0.0
+        else:
+            # Общая длина области зигзагов
+            total_zigzag_length = zigzag_length_single * zigzag_count + zigzag_step * (zigzag_count - 1)
+
+            # Ограничиваем общую длину зигзагов
+            if total_zigzag_length > total_length * 0.9:
+                max_length = total_length * 0.9
+                if zigzag_count > 1:
+                    zigzag_step = (max_length - zigzag_length_single * zigzag_count) / (zigzag_count - 1)
+                    zigzag_step = max(zigzag_step, zigzag_length_single * 0.5)
+                    total_zigzag_length = zigzag_length_single * zigzag_count + zigzag_step * (zigzag_count - 1)
+
+            straight_length = (total_length - total_zigzag_length) / 2
         
         # Строим путь с зигзагом
         path = QPainterPath()
@@ -3448,15 +3707,16 @@ class PrimitiveRenderer:
                     p4 = get_point_at_arc(zigzag_end_arc)
                     path.lineTo(p4)
                     
-                    # Если это не последний зигзаг, добавляем шаг (прямой участок)
+                    # Если это не последний зигзаг, добавляем шаг (участок сплайна между зигзагами)
                     if z < zigzag_count - 1:
                         current_arc_pos = zigzag_end_arc + zigzag_step_arc
-                        # Рисуем прямой участок между зигзагами
-                        num_step_points = max(5, int(zigzag_step_arc / total_length * 20))
-                        for i in range(1, num_step_points + 1):
-                            step_arc = zigzag_end_arc + (zigzag_step_arc * i / num_step_points)
-                            step_point = get_point_at_arc(step_arc)
-                            path.lineTo(step_point)
+                        # Рисуем участок сплайна между зигзагами (много точек для плавности)
+                        # Используем все точки из массива points между концом текущего и началом следующего зигзага
+                        start_arc_segment = zigzag_end_arc
+                        end_arc_segment = current_arc_pos
+                        for i in range(len(points)):
+                            if arc_lengths[i] > start_arc_segment and arc_lengths[i] < end_arc_segment:
+                                path.lineTo(points[i])
                     else:
                         current_arc_pos = zigzag_end_arc
         

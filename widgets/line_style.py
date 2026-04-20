@@ -23,7 +23,8 @@ class LineStyle(QObject):
     style_changed = Signal()  # Сигнал при изменении стиля
     
     def __init__(self, name, line_type, thickness_mm=0.8, dash_length=5.0, dash_gap=2.5, 
-                 is_gost_base=False, zigzag_count=1, zigzag_step_mm=4.0, wavy_amplitude_mm=None, parent=None):
+                 is_gost_base=False, zigzag_count=1, zigzag_step_mm=4.0, zigzag_adaptive=False,
+                 wavy_amplitude_mm=None, parent=None):
         super().__init__(parent)
         self._name = name
         self._line_type = line_type
@@ -34,6 +35,7 @@ class LineStyle(QObject):
         self._color = QColor(0, 0, 0)  # Цвет линии
         self._zigzag_count = zigzag_count  # Количество зигзагов для ломаной линии
         self._zigzag_step_mm = zigzag_step_mm  # Шаг между зигзагами в миллиметрах
+        self._zigzag_adaptive = bool(zigzag_adaptive)  # Авто-распределение шага между зигзагами (justify-between)
         # Амплитуда волнистой линии в миллиметрах (None означает автоматический расчет)
         if wavy_amplitude_mm is None:
             # Автоматический расчет на основе толщины линии
@@ -144,6 +146,18 @@ class LineStyle(QObject):
             self._zigzag_step_mm = value
             self.style_changed.emit()
             self._notify_objects()
+
+    @property
+    def zigzag_adaptive(self) -> bool:
+        return self._zigzag_adaptive
+
+    @zigzag_adaptive.setter
+    def zigzag_adaptive(self, value: bool):
+        value = bool(value)
+        if value != self._zigzag_adaptive:
+            self._zigzag_adaptive = value
+            self.style_changed.emit()
+            self._notify_objects()
     
     @property
     def wavy_amplitude_mm(self):
@@ -223,6 +237,7 @@ class LineStyle(QObject):
             is_gost_base=False,
             zigzag_count=self._zigzag_count,
             zigzag_step_mm=self._zigzag_step_mm,
+            zigzag_adaptive=self._zigzag_adaptive,
             wavy_amplitude_mm=self._wavy_amplitude_mm
         )
 

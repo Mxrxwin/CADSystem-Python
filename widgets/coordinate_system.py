@@ -633,6 +633,10 @@ class CoordinateSystemWidget(QWidget):
             snap_color = QColor(255, 165, 0)  # Оранжевый для вершины
         elif self.current_snap_point.snap_type == SnapType.INTERSECTION:
             snap_color = QColor(255, 0, 255)  # Пурпурный для пересечения
+        elif self.current_snap_point.snap_type == SnapType.PERPENDICULAR:
+            snap_color = QColor(0, 255, 255)  # Голубой для перпендикуляра
+        elif self.current_snap_point.snap_type == SnapType.TANGENT:
+            snap_color = QColor(255, 192, 203)  # Розовый для касательной
         else:
             snap_color = QColor(128, 128, 128)  # Серый по умолчанию
         
@@ -665,6 +669,37 @@ class CoordinateSystemWidget(QWidget):
             snap_size * 3
         )
         painter.drawEllipse(circle_rect)
+        
+        # Для перпендикуляра рисуем линию от точки привязки до начальной точки линии
+        if self.current_snap_point.snap_type == SnapType.PERPENDICULAR:
+            # Получаем начальную точку текущей линии
+            start_point = None
+            if self.scene.is_drawing():
+                drawing_type = getattr(self.scene, '_drawing_type', None)
+                if drawing_type == 'line':
+                    current_line = self.scene.get_current_line()
+                    if current_line:
+                        start_point = current_line.start_point
+                elif drawing_type == 'arc':
+                    start_point = getattr(self.scene, '_arc_start_point', None)
+            
+            if start_point:
+                # Рисуем пунктирную линию от точки привязки до начальной точки
+                # чтобы показать, что это перпендикуляр
+                perp_pen = QPen(snap_color, 1.5 / scale_factor, Qt.DashDotLine)
+                painter.setPen(perp_pen)
+                painter.drawLine(point, start_point)
+                
+                # Рисуем маленький квадрат в точке привязки для лучшей видимости
+                square_size = snap_size * 0.8
+                painter.setPen(QPen(snap_color, 1.5 / scale_factor))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawRect(
+                    point.x() - square_size / 2,
+                    point.y() - square_size / 2,
+                    square_size,
+                    square_size
+                )
         
         painter.restore()
     
@@ -1092,15 +1127,20 @@ class CoordinateSystemWidget(QWidget):
                                 if obj:
                                     self.line_finished.emit()
                         elif method == 'center_angles':
-                            # Для центра и углов - второй клик определяет радиус
+                            # Для центра и углов - второй клик определяет радиус и начальный угол
                             if self.scene._arc_radius == 0.0:
-                                # Второй клик - фиксируем радиус
+                                # Второй клик - фиксируем радиус и начальный угол
                                 dx = world_pos.x() - self.scene._arc_center.x()
                                 dy = world_pos.y() - self.scene._arc_center.y()
                                 self.scene._arc_radius = math.sqrt(dx*dx + dy*dy)
+                                self.scene._arc_start_angle = math.degrees(math.atan2(dy, dx))
                                 self.scene.update_current_object(world_pos)
-                            else:
-                                # Радиус уже установлен, завершаем (углы задаются через UI)
+                            elif self.scene._arc_start_angle is not None:
+                                # Третий клик - фиксируем конечный угол и завершаем
+                                dx = world_pos.x() - self.scene._arc_center.x()
+                                dy = world_pos.y() - self.scene._arc_center.y()
+                                end_angle = math.degrees(math.atan2(dy, dx))
+                                self.scene.update_current_object(world_pos)
                                 obj = self.scene.finish_drawing()
                                 if obj:
                                     self.line_finished.emit()
@@ -1739,9 +1779,8 @@ class CoordinateSystemWidget(QWidget):
                         # Третий этап - обновляем высоту (крайние точки уже зафиксированы)
                         self.scene.update_current_object(world_pos)
                 elif method == 'center_angles':
-                    # Для метода центр+углы обновляем радиус при движении мыши
-                    if self.scene._arc_radius == 0.0:
-                        self.scene.update_current_object(world_pos)
+                    # Для метода центр+углы обновляем предпросмотр при движении мыши
+                    self.scene.update_current_object(world_pos)
             elif self.primitive_type == 'circle':
                 # Обновляем окружность при движении мыши
                 method = self.circle_creation_method
@@ -1903,7 +1942,7 @@ class CoordinateSystemWidget(QWidget):
     
     def wheelEvent(self, event):
         """Обработчик колесика мыши и тачпада"""
-        # Приоритет pixelDelta для тачпадов (более плавное управление на Mac)
+        # Приоритет pixelDelta для тачпадов (более плавное управление)
         pixel_delta = event.pixelDelta()
         angle_delta = event.angleDelta()
         
@@ -1914,21 +1953,18 @@ class CoordinateSystemWidget(QWidget):
         if delta == 0:
             return  # Нет изменения
         
-        # Базовый коэффициент масштабирования для обычной мыши
-        base_zoom_factor = 1.1
-        
         if is_touchpad:
-            # Для тачпада используем более плавное масштабирование
-            # pixelDelta обычно в пикселях, нормализуем для плавности
-            # Значения могут варьироваться, обычно от -30 до +30
-            # Используем более чувствительный коэффициент для лучшего отклика
-            normalized_delta = delta / 60.0  # Нормализуем (делим на меньшее значение для большей чувствительности)
+            # Для тачпада: плавное, но отзывчивое масштабирование
+            # pixelDelta обычно от -120 до +120 за жест
+            # Нормализуем: делим на 120 для получения значения около ±1.0 за полный жест
+            normalized_delta = delta / 120.0
             # Ограничиваем для предотвращения слишком резких изменений
-            normalized_delta = max(-2.0, min(2.0, normalized_delta))
-            # Плавное, но отзывчивое изменение: каждый шаг дает изменение примерно на 2-3%
-            zoom_factor = 1.0 + normalized_delta * 0.035
+            normalized_delta = max(-0.5, min(0.5, normalized_delta))
+            # Каждый шаг дает изменение на 8-10% (более заметное, но плавное)
+            zoom_factor = 1.0 + normalized_delta * 0.15
         else:
-            # Для обычной мыши используем стандартный коэффициент
+            # Для обычной мыши: стандартное дискретное масштабирование
+            base_zoom_factor = 1.15  # Немного увеличил для более заметного эффекта
             zoom_factor = base_zoom_factor if delta > 0 else 1.0 / base_zoom_factor
         
         # Применяем масштабирование

@@ -23,6 +23,7 @@ class Scene:
         self._temp_arc_end_point: Optional[QPointF] = None  # Временная точка для предпросмотра
         self._arc_center: Optional[QPointF] = None  # Для метода центр+углы
         self._arc_radius: float = 0.0  # Для метода центр+углы
+        self._arc_start_angle: Optional[float] = None  # Для метода центр+углы - начальный угол
         # Для эллипса: отслеживание этапов создания (3 точки)
         self._ellipse_start_point: Optional[QPointF] = None
         self._ellipse_end_point: Optional[QPointF] = None
@@ -64,6 +65,8 @@ class Scene:
         self._drawing_type = None
         self._arc_start_point = None
         self._arc_end_point = None
+        self._arc_start_angle = None
+        self._arc_start_angle = None
     
     def set_rectangle_size(self, width: float, height: float):
         """Устанавливает размеры прямоугольника для методов point_size и center_size"""
@@ -224,6 +227,7 @@ class Scene:
                 # Центр и углы - первый клик - центр
                 self._arc_center = start_point
                 self._arc_radius = 0.0
+                self._arc_start_angle = None
                 # Создаем временный объект для предпросмотра
                 self._current_object = Arc(start_point, 0, 0, 0, 0, style=style, color=color, width=width, rotation_angle=0.0)
         elif drawing_type == 'rectangle':
@@ -408,21 +412,45 @@ class Scene:
                                 # Вычисляем и сохраняем реальную вершину дуги (точку на дуге в середине углового диапазона)
                                 self._current_object._vertex_point = self._current_object.get_vertex_point()
                 elif method == 'center_angles':
-                    # Центр и углы - второй клик определяет радиус
+                    # Центр и углы - обновляем предпросмотр дуги
+                    # Радиус и начальный угол устанавливаются при клике, не здесь
+                    
+                    # Обновляем дугу с текущим радиусом и углами
+                    self._current_object.center = self._arc_center
+                    
                     if self._arc_radius == 0.0:
-                        # Вычисляем радиус от центра до точки
+                        # Радиус еще не установлен (до второго клика) - показываем предпросмотр радиуса
                         dx = point.x() - self._arc_center.x()
                         dy = point.y() - self._arc_center.y()
-                        self._arc_radius = math.sqrt(dx*dx + dy*dy)
+                        temp_radius = math.sqrt(dx*dx + dy*dy)
+                        self._current_object.radius_x = temp_radius
+                        self._current_object.radius_y = temp_radius
+                        self._current_object.radius = temp_radius
+                        # Показываем точку на окружности
+                        angle = math.degrees(math.atan2(dy, dx))
+                        self._current_object.start_angle = angle
+                        self._current_object.end_angle = angle
+                    else:
+                        # Радиус установлен
+                        self._current_object.radius_x = self._arc_radius
+                        self._current_object.radius_y = self._arc_radius
+                        self._current_object.radius = self._arc_radius
+                        
+                        if self._arc_start_angle is not None:
+                            # Начальный угол установлен (после второго клика) - показываем предпросмотр до текущей позиции мыши
+                            dx = point.x() - self._arc_center.x()
+                            dy = point.y() - self._arc_center.y()
+                            end_angle = math.degrees(math.atan2(dy, dx))
+                            self._current_object.start_angle = self._arc_start_angle
+                            self._current_object.end_angle = end_angle
+                        else:
+                            # Начальный угол еще не установлен - показываем предпросмотр от центра до точки
+                            dx = point.x() - self._arc_center.x()
+                            dy = point.y() - self._arc_center.y()
+                            angle = math.degrees(math.atan2(dy, dx))
+                            self._current_object.start_angle = angle
+                            self._current_object.end_angle = angle
                     
-                    # Обновляем дугу с текущим радиусом и углами (пока предпросмотр)
-                    self._current_object.center = self._arc_center
-                    self._current_object.radius_x = self._arc_radius
-                    self._current_object.radius_y = self._arc_radius
-                    self._current_object.radius = self._arc_radius
-                    # Углы будут установлены при завершении рисования
-                    self._current_object.start_angle = 0
-                    self._current_object.end_angle = 90
                     self._current_object.rotation_angle = 0.0
         elif self._drawing_type == 'rectangle':
             from widgets.primitives import Rectangle
@@ -581,9 +609,13 @@ class Scene:
             if method == 'three_points' and self._arc_end_point is None:
                 # Для дуги по трем точкам нужно минимум 2 точки, не завершаем
                 return None
-            elif method == 'center_angles' and self._arc_radius == 0.0:
-                # Для дуги по центру и углам нужен радиус, не завершаем
-                return None
+            elif method == 'center_angles':
+                if self._arc_radius == 0.0:
+                    # Для дуги по центру и углам нужен радиус, не завершаем
+                    return None
+                if self._arc_start_angle is None:
+                    # Начальный угол еще не установлен, не завершаем
+                    return None
         
         if self._drawing_type == 'ellipse' and self._ellipse_end_point is None:
             # Для эллипса нужно минимум 2 точки, не завершаем
@@ -609,9 +641,14 @@ class Scene:
                             # Углы одинаковые, дуга не может быть построена
                             return None
                     elif method == 'center_angles':
-                        # Для метода центр+углы углы должны быть установлены через UI
-                        # Здесь мы просто проверяем, что радиус установлен
+                        # Для метода центр+углы проверяем, что радиус и начальный угол установлены
                         if self._arc_radius == 0.0:
+                            return None
+                        if self._arc_start_angle is None:
+                            return None
+                        # Проверяем, что углы валидны
+                        if self._current_object.start_angle == self._current_object.end_angle:
+                            # Углы одинаковые, дуга не может быть построена
                             return None
             
             # Для эллипса проверяем, что все три точки установлены
@@ -636,6 +673,7 @@ class Scene:
             self._arc_end_point = None
             self._arc_center = None
             self._arc_radius = 0.0
+            self._arc_start_angle = None
             self._ellipse_start_point = None
             self._ellipse_end_point = None
             
@@ -786,6 +824,7 @@ class Scene:
         self._arc_end_point = None
         self._arc_center = None
         self._arc_radius = 0.0
+        self._arc_start_angle = None
         self._ellipse_start_point = None
         self._ellipse_end_point = None
         self._circle_creation_method = None
