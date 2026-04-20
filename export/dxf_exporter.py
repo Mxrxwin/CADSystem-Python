@@ -204,8 +204,6 @@ class DXFExporter:
                     dl.dxf.linetype = layer.line_type
                 if not layer.visible:
                     dl.off()
-                if layer.locked:
-                    dl.lock()
             except Exception:
                 pass
 

@@ -1059,6 +1059,11 @@ class MainWindow(QMainWindow):
         # ── меню "Файл" ──────────────────────────────────────────────────
         file_menu = menubar.addMenu("Файл")
 
+        import_dxf_action = QAction("Импорт из DXF…", self)
+        import_dxf_action.setShortcut("Ctrl+O")
+        import_dxf_action.triggered.connect(self.import_from_dxf)
+        file_menu.addAction(import_dxf_action)
+
         export_dxf_action = QAction("Экспорт в DXF…", self)
         export_dxf_action.setShortcut("Ctrl+E")
         export_dxf_action.triggered.connect(self.export_to_dxf)
@@ -1316,8 +1321,7 @@ class MainWindow(QMainWindow):
             self._append_debug_log(
                 f"Слой изменён: {layer.name} | "
                 f"тип линии={getattr(layer, 'line_type', 'Continuous')} | "
-                f"видимый={'да' if getattr(layer, 'visible', True) else 'нет'} | "
-                f"заблокирован={'да' if getattr(layer, 'locked', False) else 'нет'}"
+                f"видимый={'да' if getattr(layer, 'visible', True) else 'нет'}"
             )
 
     def _on_layer_added(self, layer):
@@ -3622,6 +3626,52 @@ class MainWindow(QMainWindow):
             self.update_info()
 
     # ──────────────────────────────────────────────────────────────────
+    # Импорт из DXF
+    # ──────────────────────────────────────────────────────────────────
+
+    def import_from_dxf(self) -> None:
+        """Открывает диалог выбора файла и импортирует геометрию из DXF."""
+        filepath, _ = QFileDialog.getOpenFileName(
+            self,
+            "Импорт из DXF",
+            "",
+            "DXF Files (*.dxf);;All Files (*)",
+        )
+        if not filepath:
+            return
+
+        try:
+            from export.dxf_importer import import_dxf_from_file
+
+            imported_count = import_dxf_from_file(
+                filepath,
+                self.canvas.scene,
+                layer_manager=self.layer_manager,
+                style_manager=self.style_manager,
+            )
+            metadata = self.canvas.scene.get_dxf_metadata() if hasattr(self.canvas.scene, "get_dxf_metadata") else {}
+            header = metadata.get("header", {})
+            version = header.get("version", "UNKNOWN")
+            units = header.get("units_name", "UNKNOWN")
+            self.canvas.update()
+            self.canvas.show_all_preserve_rotation()
+            self.update_info()
+            QMessageBox.information(
+                self,
+                "Импорт завершён",
+                f"Файл загружен:\n{filepath}\n\n"
+                f"Версия DXF: {version}\n"
+                f"Единицы: {units}\n"
+                f"Объектов импортировано: {imported_count}",
+            )
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Ошибка импорта",
+                f"Не удалось импортировать файл:\n{exc}",
+            )
+
+    # ──────────────────────────────────────────────────────────────────
     # Экспорт в DXF
     # ──────────────────────────────────────────────────────────────────
 
@@ -3660,9 +3710,15 @@ class MainWindow(QMainWindow):
     def open_layer_dialog(self) -> None:
         """Открывает менеджер слоёв."""
         from ui.layer_dialog import LayerDialog
-        dlg = LayerDialog(self.layer_manager, parent=self)
+        dlg = LayerDialog(
+            self.layer_manager,
+            scene=self.canvas.scene,
+            selection_manager=self.canvas.selection_manager,
+            parent=self,
+        )
         dlg.exec()
         self.canvas.update()
+        self.update_info()
 
     def assign_layer_to_selected(self) -> None:
         """Назначает текущий слой всем выделенным объектам."""

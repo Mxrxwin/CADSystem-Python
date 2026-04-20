@@ -16,6 +16,7 @@ class Scene:
         self._current_object: Optional[GeometricObject] = None
         self._is_drawing = False
         self._drawing_type: Optional[str] = None  # 'line', 'circle', 'arc', 'rectangle', 'ellipse', 'polygon', 'spline'
+        self._dxf_metadata: dict = {}
         # Для дуги: отслеживание этапов создания
         self._arc_creation_method: Optional[str] = None  # 'three_points', 'center_angles'
         self._arc_start_point: Optional[QPointF] = None
@@ -56,6 +57,14 @@ class Scene:
         """Удаляет объект со сцены"""
         if obj in self._objects:
             self._objects.remove(obj)
+
+    def set_dxf_metadata(self, metadata: dict) -> None:
+        """Сохраняет метаданные импортированного DXF для последующего использования."""
+        self._dxf_metadata = dict(metadata or {})
+
+    def get_dxf_metadata(self) -> dict:
+        """Возвращает метаданные последнего импортированного DXF."""
+        return dict(self._dxf_metadata)
 
     def add_linear_dimension(self, start: QPointF, end: QPointF, dimension_type: str = 'horizontal',
                              offset: float = 10.0, style=None):
@@ -1186,4 +1195,3 @@ class Scene:
             points.append(QPointF(bbox.right(), bbox.bottom()))
             points.append(QPointF(bbox.left(), bbox.bottom()))
         return points
-

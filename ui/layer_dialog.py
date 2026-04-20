@@ -48,11 +48,12 @@ class LayerDialog(QDialog):
     COL_COLOR   = 2
     COL_LINETYPE = 3
     COL_VISIBLE = 4
-    COL_LOCKED  = 5
 
-    def __init__(self, layer_manager: LayerManager, parent=None) -> None:
+    def __init__(self, layer_manager: LayerManager, scene=None, selection_manager=None, parent=None) -> None:
         super().__init__(parent)
         self._lm = layer_manager
+        self._scene = scene
+        self._selection_manager = selection_manager
         self.setWindowTitle("Менеджер слоёв")
         self.setMinimumSize(720, 400)
         self._build_ui()
@@ -66,9 +67,9 @@ class LayerDialog(QDialog):
         layout = QVBoxLayout(self)
 
         # Таблица
-        self._table = QTableWidget(0, 6)
+        self._table = QTableWidget(0, 5)
         self._table.setHorizontalHeaderLabels([
-            "●", "Имя", "Цвет", "Тип линии", "Видим.", "Заблок."
+            "●", "Имя", "Цвет", "Тип линии", "Видим."
         ])
         hh = self._table.horizontalHeader()
         hh.setSectionResizeMode(self.COL_CURRENT,  QHeaderView.ResizeToContents)
@@ -76,7 +77,6 @@ class LayerDialog(QDialog):
         hh.setSectionResizeMode(self.COL_COLOR,    QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(self.COL_LINETYPE, QHeaderView.Stretch)
         hh.setSectionResizeMode(self.COL_VISIBLE,  QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(self.COL_LOCKED,   QHeaderView.ResizeToContents)
         self._table.setSelectionBehavior(QTableWidget.SelectRows)
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._table.doubleClicked.connect(self._on_double_click)
@@ -162,14 +162,6 @@ class LayerDialog(QDialog):
         )
         self._center_widget(row, self.COL_VISIBLE, vis_cb)
 
-        # Блокировка
-        lock_cb = QCheckBox()
-        lock_cb.setChecked(layer.locked)
-        lock_cb.toggled.connect(
-            lambda checked, n=layer.name: self._lm.update_layer(n, locked=checked)
-        )
-        self._center_widget(row, self.COL_LOCKED, lock_cb)
-
     def _center_widget(self, row: int, col: int, widget) -> None:
         container = QWidget()
         hl = QHBoxLayout(container)
@@ -215,10 +207,46 @@ class LayerDialog(QDialog):
         if name == "0":
             QMessageBox.information(self, "Нельзя", "Слой «0» нельзя удалить.")
             return
+        object_count = self._remove_objects_on_layer(name, dry_run=True)
+        if object_count > 0:
+            answer = QMessageBox.question(
+                self,
+                "Удаление слоя",
+                f"Слой «{name}» содержит объектов: {object_count}.\n"
+                "Удалить слой вместе со всеми объектами этого слоя?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
         if not self._lm.remove_layer(name):
             QMessageBox.warning(self, "Ошибка", f"Не удалось удалить слой «{name}».")
             return
+        self._remove_objects_on_layer(name)
         self._populate()
+
+    def _remove_objects_on_layer(self, layer_name: str, dry_run: bool = False) -> int:
+        if self._scene is None:
+            return 0
+
+        objects = [
+            obj for obj in self._scene.get_objects()
+            if getattr(obj, "layer_name", "0") == layer_name
+        ]
+        if dry_run:
+            return len(objects)
+
+        if objects and self._selection_manager is not None:
+            self._selection_manager.clear_selection()
+
+        for obj in objects:
+            self._scene.remove_object(obj)
+
+        current_obj = self._scene.get_current_object() if hasattr(self._scene, "get_current_object") else None
+        if current_obj is not None and getattr(current_obj, "layer_name", "0") == layer_name:
+            current_obj.layer_name = self._lm.current_layer_name
+
+        return len(objects)
 
     def _rename_layer(self) -> None:
         name = self._selected_layer_name()
@@ -244,7 +272,6 @@ class LayerDialog(QDialog):
             color=QColor(old.color),
             line_type=old.line_type,
             visible=old.visible,
-            locked=old.locked,
         )
         self._lm.remove_layer(name)
         self._lm.add_layer(new_layer)
