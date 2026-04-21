@@ -11,6 +11,14 @@ from PySide6.QtGui import QPainter, QPen, QColor, QPixmap, QHelpEvent, QPainterP
 import math
 
 from widgets.line_style import LineStyleManager, LineType
+from widgets.dimensions import (
+    AngularDimension,
+    LinearDimension,
+    RadialDimension,
+    CUSTOM_DIMENSION_STYLE_NAME,
+    get_dimension_style_names,
+    get_dimension_style_preset,
+)
 
 _LAYER_LINETYPE_TO_STYLE = {
     "CONTINUOUS": LineType.SOLID_MAIN,
@@ -606,11 +614,23 @@ class ObjectPropertiesPanel(QGroupBox):
         
         # Выбор стиля
         style_label = QLabel("Стиль линии:")
+        self.line_style_label = style_label
         layout.addWidget(style_label)
         
         self.style_combo = StyleComboBox(self.style_manager, self.layer_manager)
         self.style_combo.currentIndexChanged.connect(self.on_style_changed)
         layout.addWidget(self.style_combo)
+
+        self.dimension_style_label = QLabel("Стиль размера:")
+        self.dimension_style_label.hide()
+        layout.addWidget(self.dimension_style_label)
+
+        self.dimension_style_combo = QComboBox()
+        self.dimension_style_combo.addItem(CUSTOM_DIMENSION_STYLE_NAME)
+        self.dimension_style_combo.addItems(get_dimension_style_names())
+        self.dimension_style_combo.currentIndexChanged.connect(self.on_dimension_style_changed)
+        self.dimension_style_combo.hide()
+        layout.addWidget(self.dimension_style_combo)
         
         # Информация о текущем стиле
         self.style_info_label = QLabel("")
@@ -629,8 +649,49 @@ class ObjectPropertiesPanel(QGroupBox):
         """Обновляет отображение панели"""
         if not self.selected_objects:
             self.style_combo.setCurrentIndex(-1)
+            self.dimension_style_combo.setCurrentIndex(-1)
+            self.line_style_label.show()
+            self.style_combo.show()
+            self.dimension_style_label.hide()
+            self.dimension_style_combo.hide()
             self.style_info_label.setText("Нет выделенных объектов")
             return
+
+        dimension_flags = [isinstance(obj, (LinearDimension, RadialDimension, AngularDimension)) for obj in self.selected_objects]
+        all_dimensions = all(dimension_flags)
+        has_dimensions = any(dimension_flags)
+        if has_dimensions and not all_dimensions:
+            self.line_style_label.hide()
+            self.style_combo.hide()
+            self.dimension_style_label.hide()
+            self.dimension_style_combo.hide()
+            self.style_info_label.setText("Смешанное выделение: свойства размеров и линий редактируются отдельно")
+            return
+
+        if all_dimensions:
+            self.line_style_label.hide()
+            self.style_combo.hide()
+            self.dimension_style_label.show()
+            self.dimension_style_combo.show()
+            style_names = {getattr(obj, 'style_name', CUSTOM_DIMENSION_STYLE_NAME) or CUSTOM_DIMENSION_STYLE_NAME for obj in self.selected_objects}
+            if len(style_names) == 1:
+                style_name = next(iter(style_names))
+                index = self.dimension_style_combo.findText(style_name)
+                self.dimension_style_combo.blockSignals(True)
+                self.dimension_style_combo.setCurrentIndex(index if index >= 0 else 0)
+                self.dimension_style_combo.blockSignals(False)
+                self.style_info_label.setText(f"Размеров выбрано: {len(self.selected_objects)} | стиль: {style_name}")
+            else:
+                self.dimension_style_combo.blockSignals(True)
+                self.dimension_style_combo.setCurrentIndex(0)
+                self.dimension_style_combo.blockSignals(False)
+                self.style_info_label.setText(f"Размеров выбрано: {len(self.selected_objects)} | стили отличаются")
+            return
+
+        self.line_style_label.show()
+        self.style_combo.show()
+        self.dimension_style_label.hide()
+        self.dimension_style_combo.hide()
         
         # Проверяем, все ли объекты имеют один стиль
         styles = set()
@@ -658,6 +719,8 @@ class ObjectPropertiesPanel(QGroupBox):
     
     def on_style_changed(self):
         """Обработчик изменения стиля"""
+        if any(isinstance(obj, (LinearDimension, RadialDimension, AngularDimension)) for obj in self.selected_objects):
+            return
         style = self.style_combo.get_current_style()
         if not style:
             return
@@ -685,6 +748,32 @@ class ObjectPropertiesPanel(QGroupBox):
             # Обновляем canvas
             if self.canvas:
                 self.canvas.update()
+
+    def on_dimension_style_changed(self):
+        if not self.selected_objects:
+            return
+        if not all(isinstance(obj, (LinearDimension, RadialDimension, AngularDimension)) for obj in self.selected_objects):
+            return
+
+        style_name = self.dimension_style_combo.currentText()
+        if not style_name:
+            return
+
+        if style_name == CUSTOM_DIMENSION_STYLE_NAME:
+            self.update_display()
+            return
+
+        for obj in self.selected_objects:
+            style = get_dimension_style_preset(style_name)
+            obj.style = style
+            obj.style_name = style.name
+
+        self.update_display()
+        self.style_changed.emit(None)
+        if self.canvas:
+            if hasattr(self.canvas, 'scene'):
+                self.canvas.scene.notify_geometry_changed()
+            self.canvas.update()
 
 
 class StyleManagementPanel(QGroupBox):

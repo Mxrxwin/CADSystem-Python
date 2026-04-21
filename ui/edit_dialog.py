@@ -419,6 +419,12 @@ class EditDialog(QDialog):
         from widgets.primitives import Circle, Rectangle, Arc, Ellipse, Polygon
         if isinstance(self.editing_object, LineSegment):
             mode_text = "Перемещение точек"
+        elif isinstance(self.editing_object, LinearDimension):
+            mode_text = "Грипы размера"
+        elif isinstance(self.editing_object, RadialDimension):
+            mode_text = "Грипы размера"
+        elif isinstance(self.editing_object, AngularDimension):
+            mode_text = "Грипы размера"
         elif isinstance(self.editing_object, Circle):
             mode_text = "Перемещение точек"
         elif isinstance(self.editing_object, Rectangle):
@@ -461,6 +467,8 @@ class EditDialog(QDialog):
     def apply_changes(self):
         """Применяет изменения к объекту"""
         if self.editing_object and self.canvas:
+            if hasattr(self.canvas, 'scene'):
+                self.canvas.scene.notify_geometry_changed(self.editing_object)
             # Обновляем отображение на канвасе
             self.canvas.update()
             # Отправляем сигнал об изменении
@@ -1583,6 +1591,8 @@ class EditDialog(QDialog):
             self.load_circle_data(self.editing_object)
         elif isinstance(self.editing_object, Rectangle):
             self.load_rectangle_data(self.editing_object)
+        elif isinstance(self.editing_object, (LinearDimension, RadialDimension, AngularDimension)):
+            self.load_dimension_data(self.editing_object)
         elif isinstance(self.editing_object, Arc):
             self.update_arc_input_fields()
         elif isinstance(self.editing_object, Ellipse):
@@ -1599,7 +1609,7 @@ class EditDialog(QDialog):
     # ─── Размерные линии ──────────────────────────────────────────────────────
 
     def _capture_dimension_state(self, obj):
-        state = {'text_override': obj.text_override}
+        state = {'text_override': obj.text_override, 'style_name': getattr(obj, 'style_name', None)}
         state['text_position_override'] = QPointF(obj.text_position_override) if obj.text_position_override is not None else None
         state['style'] = copy.deepcopy(obj.style)
         if isinstance(obj, LinearDimension):
@@ -1608,6 +1618,8 @@ class EditDialog(QDialog):
                 'end': QPointF(obj.end),
                 'dimension_type': obj.dimension_type,
                 'offset': obj.offset,
+                'start_anchor': copy.deepcopy(getattr(obj, 'start_anchor', None)),
+                'end_anchor': copy.deepcopy(getattr(obj, 'end_anchor', None)),
             })
         elif isinstance(obj, RadialDimension):
             state.update({
@@ -1615,6 +1627,9 @@ class EditDialog(QDialog):
                 'radius_point': QPointF(obj.radius_point),
                 'dimension_type': obj.dimension_type,
                 'leader_point': QPointF(obj.leader_point) if obj.leader_point is not None else None,
+                'center_anchor': copy.deepcopy(getattr(obj, 'center_anchor', None)),
+                'radius_anchor': copy.deepcopy(getattr(obj, 'radius_anchor', None)),
+                'leader_offset': QPointF(obj.leader_offset) if getattr(obj, 'leader_offset', None) is not None else None,
             })
         elif isinstance(obj, AngularDimension):
             state.update({
@@ -1622,11 +1637,15 @@ class EditDialog(QDialog):
                 'ray_start': QPointF(obj.ray_start),
                 'ray_end': QPointF(obj.ray_end),
                 'radius': obj.radius,
+                'vertex_anchor': copy.deepcopy(getattr(obj, 'vertex_anchor', None)),
+                'ray_start_anchor': copy.deepcopy(getattr(obj, 'ray_start_anchor', None)),
+                'ray_end_anchor': copy.deepcopy(getattr(obj, 'ray_end_anchor', None)),
             })
         return state
 
     def _restore_dimension_state(self, obj, state):
         obj.text_override = state['text_override']
+        obj.style_name = state.get('style_name')
         obj.text_position_override = QPointF(state['text_position_override']) if state['text_position_override'] is not None else None
         obj.style = copy.deepcopy(state['style'])
         if isinstance(obj, LinearDimension):
@@ -1634,16 +1653,24 @@ class EditDialog(QDialog):
             obj.end = state['end']
             obj.dimension_type = state['dimension_type']
             obj.offset = state['offset']
+            obj.start_anchor = copy.deepcopy(state.get('start_anchor'))
+            obj.end_anchor = copy.deepcopy(state.get('end_anchor'))
         elif isinstance(obj, RadialDimension):
             obj.center = state['center']
             obj.radius_point = state['radius_point']
             obj.dimension_type = state['dimension_type']
             obj.leader_point = QPointF(state['leader_point']) if state['leader_point'] is not None else None
+            obj.center_anchor = copy.deepcopy(state.get('center_anchor'))
+            obj.radius_anchor = copy.deepcopy(state.get('radius_anchor'))
+            obj.leader_offset = QPointF(state['leader_offset']) if state.get('leader_offset') is not None else None
         elif isinstance(obj, AngularDimension):
             obj.vertex = state['vertex']
             obj.ray_start = state['ray_start']
             obj.ray_end = state['ray_end']
             obj.radius = state['radius']
+            obj.vertex_anchor = copy.deepcopy(state.get('vertex_anchor'))
+            obj.ray_start_anchor = copy.deepcopy(state.get('ray_start_anchor'))
+            obj.ray_end_anchor = copy.deepcopy(state.get('ray_end_anchor'))
 
     def _block_controls(self, controls, blocked):
         for control in controls:
@@ -1900,6 +1927,8 @@ class EditDialog(QDialog):
             style.text.color = color
             style.arrows.color = color
             self._set_color_button(self.dim_text_color_btn, color)
+        if hasattr(self.editing_object, "mark_style_custom"):
+            self.editing_object.mark_style_custom()
         self.apply_changes()
 
     def on_dimension_style_changed(self, *_):
@@ -1919,6 +1948,8 @@ class EditDialog(QDialog):
         style.text.height = self.dim_text_height_spin.value()
         style.text.gap = self.dim_text_gap_spin.value()
         style.text.position = self.dim_text_position_combo.currentText()
+        if hasattr(self.editing_object, "mark_style_custom"):
+            self.editing_object.mark_style_custom()
         self.apply_changes()
 
     def closeEvent(self, event):
@@ -1929,4 +1960,3 @@ class EditDialog(QDialog):
             self.canvas.set_editing_mode(False, None)
             self.dragging_point = None
         super().closeEvent(event)
-

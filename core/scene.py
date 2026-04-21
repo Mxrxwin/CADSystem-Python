@@ -57,6 +57,8 @@ class Scene:
         """Удаляет объект со сцены"""
         if obj in self._objects:
             self._objects.remove(obj)
+            self._detach_dimensions_from_object(obj)
+            self.refresh_all_dimensions()
 
     def set_dxf_metadata(self, metadata: dict) -> None:
         """Сохраняет метаданные импортированного DXF для последующего использования."""
@@ -97,6 +99,36 @@ class Scene:
         self._arc_end_point = None
         self._arc_start_angle = None
         self._arc_start_angle = None
+
+    def _iter_dimension_objects(self):
+        try:
+            from widgets.dimensions import DimensionBase
+        except ImportError:
+            return []
+
+        objects = list(self._objects)
+        if self._current_object is not None:
+            objects.append(self._current_object)
+        return [obj for obj in objects if isinstance(obj, DimensionBase)]
+
+    def _detach_dimensions_from_object(self, source_object) -> None:
+        for dimension in self._iter_dimension_objects():
+            if dimension is source_object:
+                continue
+            if hasattr(dimension, "detach_object_reference"):
+                dimension.detach_object_reference(source_object)
+
+    def refresh_all_dimensions(self) -> bool:
+        changed = False
+        for dimension in self._iter_dimension_objects():
+            if hasattr(dimension, "refresh_from_associations"):
+                changed = bool(dimension.refresh_from_associations()) or changed
+        return changed
+
+    def notify_geometry_changed(self, source_object: GeometricObject | None = None) -> bool:
+        if source_object is None:
+            return self.refresh_all_dimensions()
+        return self.refresh_all_dimensions()
     
     def set_rectangle_size(self, width: float, height: float):
         """Устанавливает размеры прямоугольника для методов point_size и center_size"""

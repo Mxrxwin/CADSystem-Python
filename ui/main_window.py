@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                                QTableWidget, QTableWidgetItem, QHeaderView, QToolButton,
                                QFileDialog, QPlainTextEdit)
 from PySide6.QtCore import QPointF, Qt, QSize, QRectF
-from PySide6.QtGui import QColor, QAction, QIcon, QKeySequence, QPixmap, QPainter, QPen
+from PySide6.QtGui import QColor, QAction, QIcon, QKeySequence, QPixmap, QPainter, QPen, QPainterPath
 
 from widgets.coordinate_system import CoordinateSystemWidget
 from widgets.line_style import LineStyleManager, LineType
@@ -141,6 +141,17 @@ class MainWindow(QMainWindow):
             self.primitive_buttons.append(btn)
         
         primitive_toolbar_layout.addStretch()
+        
+        self.debug_toggle_btn = QPushButton()
+        self.debug_toggle_btn.setCheckable(True)
+        self.debug_toggle_btn.setText("")
+        self.debug_toggle_btn.setIcon(self._create_debug_toggle_icon())
+        self.debug_toggle_btn.setIconSize(QSize(20, 20))
+        self.debug_toggle_btn.setToolTip("Показать или скрыть диагностику")
+        self.debug_toggle_btn.setFixedSize(50, 50)
+        self.debug_toggle_btn.toggled.connect(self.toggle_debug_panel)
+        primitive_toolbar_layout.addWidget(self.debug_toggle_btn)
+
         primitive_toolbar.setStyleSheet("""
             QPushButton {
                 border: 1px solid #ccc;
@@ -879,15 +890,20 @@ class MainWindow(QMainWindow):
         left_panel.addStretch()
         
         # правая часть с рабочей областью и информацией (используем вертикальный splitter для изменения размеров)
-        right_splitter = QSplitter(Qt.Vertical)
-        right_splitter.setHandleWidth(8)  # Увеличенная ширина разделителя для легкого захвата (16px)
-        right_splitter.setChildrenCollapsible(False)  # Не позволяем полностью скрывать панели
-        right_splitter.setOpaqueResize(True)  # Показываем изменения размеров в реальном времени
+        right_container = QWidget()
+        right_container_layout = QVBoxLayout(right_container)
+        right_container_layout.setContentsMargins(0, 0, 0, 0)
+        right_container_layout.setSpacing(6)
+
+        self.right_splitter = QSplitter(Qt.Vertical)
+        self.right_splitter.setHandleWidth(8)  # Увеличенная ширина разделителя для легкого захвата (16px)
+        self.right_splitter.setChildrenCollapsible(False)  # Не позволяем полностью скрывать панели
+        self.right_splitter.setOpaqueResize(True)  # Показываем изменения размеров в реальном времени
         # Добавляем стиль для более заметного разделителя
 
         
         # рабочая область
-        right_splitter.addWidget(self.canvas)
+        self.right_splitter.addWidget(self.canvas)
         
         # информационная панель
         info_group = QGroupBox("Информация об объекте")
@@ -927,29 +943,31 @@ class MainWindow(QMainWindow):
         info_group.setLayout(info_layout)
         # Устанавливаем минимальную высоту для информационной панели
         info_group.setMinimumHeight(210)
-        right_splitter.addWidget(info_group)
+        self.right_splitter.addWidget(info_group)
 
-        debug_group = QGroupBox("Диагностика")
+        self.debug_group = QGroupBox("Диагностика")
         debug_layout = QVBoxLayout()
         self.debug_log = QPlainTextEdit()
         self.debug_log.setReadOnly(True)
         self.debug_log.setMaximumBlockCount(200)
         self.debug_log.setPlaceholderText("Здесь будет диагностическая информация по объекту, стилю, слою и типу линии.")
         debug_layout.addWidget(self.debug_log)
-        debug_group.setLayout(debug_layout)
-        debug_group.setMinimumHeight(160)
-        right_splitter.addWidget(debug_group)
+        self.debug_group.setLayout(debug_layout)
+        self.debug_group.setMinimumHeight(160)
+        self.right_splitter.addWidget(self.debug_group)
         
         # Устанавливаем пропорции: рабочая область - 4 части, инфо и диагностика - по 1 части
-        right_splitter.setStretchFactor(0, 4)
-        right_splitter.setStretchFactor(1, 1)
-        right_splitter.setStretchFactor(2, 1)
+        self.right_splitter.setStretchFactor(0, 4)
+        self.right_splitter.setStretchFactor(1, 1)
+        self.right_splitter.setStretchFactor(2, 1)
         # Устанавливаем начальные размеры: рабочая область - большая часть, нижние панели - меньше
-        right_splitter.setSizes([700, 220, 180])
+        self.right_splitter.setSizes([700, 220, 180])
+        right_container_layout.addWidget(self.right_splitter)
+        self.debug_group.hide()
         
         # Добавляем виджеты в splitter (левая часть уже содержит панель инструментов и блок настроек)
         main_splitter.addWidget(left_splitter)
-        main_splitter.addWidget(right_splitter)  # Используем вертикальный splitter для правой части
+        main_splitter.addWidget(right_container)  # Используем вертикальный splitter для правой части
         
         # Сохраняем ссылку на scroll_area для управления видимостью
         self.scroll_area = scroll_area
@@ -957,7 +975,8 @@ class MainWindow(QMainWindow):
         # Устанавливаем политику размеров для виджетов в splitter
         # Это позволяет им изменяться при изменении размера окна
         scroll_area.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-        right_splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        right_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.right_splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         left_splitter.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         
         # Устанавливаем начальные размеры: левая панель - 400px, правая - остальное
@@ -1052,6 +1071,51 @@ class MainWindow(QMainWindow):
     def rotate_right(self):
         # поворот направо
         self.canvas.rotate_right(15)
+
+    def toggle_debug_panel(self, visible: bool):
+        """Показывает или скрывает панель диагностики."""
+        if not hasattr(self, "debug_group") or not hasattr(self, "right_splitter"):
+            return
+
+        self.debug_group.setVisible(visible)
+        self.debug_toggle_btn.setText("")
+
+        if visible:
+            sizes = self.right_splitter.sizes()
+            if len(sizes) >= 3:
+                canvas_size = max(sizes[0], 500)
+                info_size = max(sizes[1], 180)
+                debug_size = sizes[2] if sizes[2] > 0 else 180
+                self.right_splitter.setSizes([canvas_size, info_size, debug_size])
+        else:
+            sizes = self.right_splitter.sizes()
+            if len(sizes) >= 3:
+                self.right_splitter.setSizes([sizes[0] + max(sizes[2], 180), sizes[1], 0])
+
+    def _create_debug_toggle_icon(self) -> QIcon:
+        """Создает иконку кардиограммы для кнопки диагностики."""
+        size = 20
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.transparent)
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(QColor(30, 30, 30), 1.8)
+        painter.setPen(pen)
+
+        path = QPainterPath()
+        path.moveTo(1, 11)
+        path.lineTo(5, 11)
+        path.lineTo(7, 9)
+        path.lineTo(9, 14)
+        path.lineTo(11, 5)
+        path.lineTo(13, 12)
+        path.lineTo(16, 10)
+        path.lineTo(19, 10)
+        painter.drawPath(path)
+
+        painter.end()
+        return QIcon(pixmap)
     
     def create_menus(self):
         menubar = self.menuBar()
@@ -1297,6 +1361,7 @@ class MainWindow(QMainWindow):
         """Обработчик изменения стиля объекта"""
         # Обновляем отрисовку
         self.canvas.update()
+        self.update_info()
 
     def _on_style_changed(self, style):
         """Обновляет UI и диагностику при изменении параметров стиля."""
@@ -3147,6 +3212,7 @@ class MainWindow(QMainWindow):
         # Определяем тип объекта и показываем соответствующую информацию
         from widgets.line_segment import LineSegment
         from widgets.primitives import Circle, Arc, Rectangle, Ellipse, Polygon, Spline
+        from widgets.dimensions import LinearDimension, RadialDimension, AngularDimension
         
         if isinstance(obj, LineSegment):
             self._update_line_info(obj)
@@ -3162,6 +3228,12 @@ class MainWindow(QMainWindow):
             self._update_polygon_info(obj)
         elif isinstance(obj, Spline):
             self._update_spline_info(obj)
+        elif isinstance(obj, LinearDimension):
+            self._update_linear_dimension_info(obj)
+        elif isinstance(obj, RadialDimension):
+            self._update_radial_dimension_info(obj)
+        elif isinstance(obj, AngularDimension):
+            self._update_angular_dimension_info(obj)
         else:
             self._clear_info_panel()
     
@@ -3493,6 +3565,62 @@ class MainWindow(QMainWindow):
         self.info_label4.setText("Длина:")
         self.info_value4.setText(f"{length:.2f}")
         self._update_object_debug_info(spline)
+
+    def _update_linear_dimension_info(self, dimension):
+        self.info_label1.setText("Размер:")
+        self.info_value1.setText(f"{dimension.display_text} (авто: {dimension._default_text()})")
+        self.info_label2.setText("Точки:")
+        self.info_value2.setText(
+            f"({dimension.start.x():.2f}, {dimension.start.y():.2f}) -> "
+            f"({dimension.end.x():.2f}, {dimension.end.y():.2f})"
+        )
+        self.info_label3.setText("Тип / смещение:")
+        self.info_value3.setText(f"{dimension.dimension_type} / {dimension.offset:.2f}")
+        self.info_label4.setText("Ассоциативность:")
+        self.info_value4.setText("Да" if getattr(dimension, "is_associative", False) else "Нет")
+        self.info_label5.setText("Слой / стиль:")
+        self.info_value5.setText(f"{getattr(dimension, 'layer_name', '0')} / {getattr(dimension, 'style_name', 'Индивидуальный')}")
+        self.info_label6.setText("Текст:")
+        text_pos = dimension.get_text_position()
+        self.info_value6.setText(f"({text_pos.x():.2f}, {text_pos.y():.2f})")
+        self._update_object_debug_info(dimension)
+
+    def _update_radial_dimension_info(self, dimension):
+        label = "Диаметр" if getattr(dimension, "dimension_type", "radius") == "diameter" else "Радиус"
+        self.info_label1.setText(f"{label}:")
+        self.info_value1.setText(f"{dimension.display_text} (авто: {dimension._default_text()})")
+        self.info_label2.setText("Центр:")
+        self.info_value2.setText(f"({dimension.center.x():.2f}, {dimension.center.y():.2f})")
+        self.info_label3.setText("Точка радиуса:")
+        self.info_value3.setText(f"({dimension.radius_point.x():.2f}, {dimension.radius_point.y():.2f})")
+        self.info_label4.setText("Ассоциативность:")
+        self.info_value4.setText("Да" if getattr(dimension, "is_associative", False) else "Нет")
+        self.info_label5.setText("Слой / стиль:")
+        self.info_value5.setText(f"{getattr(dimension, 'layer_name', '0')} / {getattr(dimension, 'style_name', 'Индивидуальный')}")
+        self.info_label6.setText("Текст:")
+        text_pos = dimension.get_text_position()
+        self.info_value6.setText(f"({text_pos.x():.2f}, {text_pos.y():.2f})")
+        self._update_object_debug_info(dimension)
+
+    def _update_angular_dimension_info(self, dimension):
+        self.info_label1.setText("Угол:")
+        self.info_value1.setText(f"{dimension.display_text} (авто: {dimension._default_text()})")
+        self.info_label2.setText("Вершина:")
+        self.info_value2.setText(f"({dimension.vertex.x():.2f}, {dimension.vertex.y():.2f})")
+        self.info_label3.setText("Лучи:")
+        self.info_value3.setText(
+            f"({dimension.ray_start.x():.2f}, {dimension.ray_start.y():.2f}) / "
+            f"({dimension.ray_end.x():.2f}, {dimension.ray_end.y():.2f})"
+        )
+        self.info_label4.setText("Радиус / ассоц.:")
+        assoc_text = "Да" if getattr(dimension, "is_associative", False) else "Нет"
+        self.info_value4.setText(f"{dimension.radius:.2f} / {assoc_text}")
+        self.info_label5.setText("Слой / стиль:")
+        self.info_value5.setText(f"{getattr(dimension, 'layer_name', '0')} / {getattr(dimension, 'style_name', 'Индивидуальный')}")
+        self.info_label6.setText("Текст:")
+        text_pos = dimension.get_text_position()
+        self.info_value6.setText(f"({text_pos.x():.2f}, {text_pos.y():.2f})")
+        self._update_object_debug_info(dimension)
     
     def _create_primitive_icon(self, primitive_name: str) -> QIcon:
         """Создает иконку для типа примитива"""
@@ -3550,6 +3678,17 @@ class MainWindow(QMainWindow):
                 x2 = margin + (width / (num_points - 1)) * (i + 1)
                 y2 = center_y + 3 * math.sin((i + 1) * math.pi / 2)
                 painter.drawLine(int(x1), int(y1), int(x2), int(y2))
+        elif primitive_name == "Размер":
+            # Линейка под небольшим углом
+            painter.save()
+            painter.translate(center_x, center_y)
+            painter.rotate(-28)
+            ruler_rect = QRectF(-7, -4, 14, 8)
+            painter.drawRoundedRect(ruler_rect, 1.5, 1.5)
+            for x in (-4, -1, 2, 5):
+                tick_height = 3 if x in (-4, 2) else 2
+                painter.drawLine(int(x), -4, int(x), -4 + tick_height)
+            painter.restore()
         
         painter.end()
         return QIcon(pixmap)

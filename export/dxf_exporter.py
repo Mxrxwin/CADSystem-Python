@@ -524,7 +524,7 @@ class DXFExporter:
         text_pos = obj.get_default_text_position()
         self._add_text(msp, obj.display_text, text_pos,
                        obj.style.text.height, attribs,
-                       rotation=math.degrees(obj.get_text_angle()))
+                       rotation=obj.get_text_angle())
 
     # ------------------------------------------------------------------
     # Вспомогательные методы для размеров

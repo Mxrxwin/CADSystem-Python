@@ -14,7 +14,15 @@ from core.renderer import SceneRenderer
 from core.snapping import SnapManager, SnapPoint
 from widgets.line_segment import LineSegment
 from widgets.line_style import LineStyleManager
-from widgets.primitives import Arc, Ellipse, Polygon, Spline
+from widgets.primitives import Circle, Arc, Ellipse, Polygon, Spline
+from widgets.dimensions import (
+    AngularDimension,
+    LinearDimension,
+    RadialDimension,
+    free_anchor,
+    get_dimension_style_preset,
+    make_anchor_from_object_point,
+)
 
 
 class CoordinateSystemWidget(QWidget):
@@ -78,6 +86,8 @@ class CoordinateSystemWidget(QWidget):
         self.rectangle_creation_method = 'two_points'
         self.polygon_creation_method = 'center_radius_vertices'
         self.polygon_num_vertices = 3
+        self.dimension_creation_type = 'horizontal'
+        self._dimension_state = None
 
         # Режим редактирования (перемещение точек)
         self.editing_mode = False
@@ -551,7 +561,77 @@ class CoordinateSystemWidget(QWidget):
                     painter.setPen(QPen(color, 2))
                     painter.setBrush(QColor(color.red(), color.green(), color.blue(), 200))
                     painter.drawEllipse(point_screen, point_radius, point_radius)
-        
+        elif isinstance(obj, LinearDimension):
+            geom = obj._geometry()
+            offset_handle = QPointF(
+                (geom[4].x() + geom[5].x()) / 2.0,
+                (geom[4].y() + geom[5].y()) / 2.0,
+            )
+            handles = {
+                'start': obj.start,
+                'end': obj.end,
+                'text': obj.get_text_position(),
+                'offset': offset_handle,
+            }
+            colors = {
+                'start': QColor(0, 180, 0),
+                'end': QColor(220, 0, 0),
+                'offset': QColor(0, 90, 220),
+                'text': QColor(180, 90, 0),
+            }
+            for name, world_point in handles.items():
+                screen_point = self.viewport.world_to_screen(world_point)
+                color = colors[name]
+                painter.setPen(QPen(color, 2 if self.dragging_point != name else 3))
+                painter.setBrush(QColor(color.red(), color.green(), color.blue(), 200 if self.dragging_point != name else 140))
+                painter.drawEllipse(screen_point, point_radius + (3 if self.dragging_point == name else 0), point_radius + (3 if self.dragging_point == name else 0))
+        elif isinstance(obj, RadialDimension):
+            handles = {
+                'center': obj.center,
+                'radius': obj.radius_point,
+                'text': obj.get_text_position(),
+            }
+            axis_tip, _, ux, uy = obj._axis_points()
+            handles['leader'] = obj._line_end(axis_tip, ux, uy)
+            colors = {
+                'center': QColor(0, 90, 220),
+                'radius': QColor(220, 0, 0),
+                'leader': QColor(0, 180, 0),
+                'text': QColor(180, 90, 0),
+            }
+            for name, world_point in handles.items():
+                screen_point = self.viewport.world_to_screen(world_point)
+                color = colors[name]
+                painter.setPen(QPen(color, 2 if self.dragging_point != name else 3))
+                painter.setBrush(QColor(color.red(), color.green(), color.blue(), 200 if self.dragging_point != name else 140))
+                painter.drawEllipse(screen_point, point_radius + (3 if self.dragging_point == name else 0), point_radius + (3 if self.dragging_point == name else 0))
+        elif isinstance(obj, AngularDimension):
+            mid_angle = obj._mid_angle()
+            arc_handle = QPointF(
+                obj.vertex.x() + obj.radius * math.cos(mid_angle),
+                obj.vertex.y() + obj.radius * math.sin(mid_angle),
+            )
+            handles = {
+                'vertex': obj.vertex,
+                'ray_start': obj.ray_start,
+                'ray_end': obj.ray_end,
+                'radius': arc_handle,
+                'text': obj.get_text_position(),
+            }
+            colors = {
+                'vertex': QColor(0, 90, 220),
+                'ray_start': QColor(0, 180, 0),
+                'ray_end': QColor(220, 0, 0),
+                'radius': QColor(160, 0, 160),
+                'text': QColor(180, 90, 0),
+            }
+            for name, world_point in handles.items():
+                screen_point = self.viewport.world_to_screen(world_point)
+                color = colors[name]
+                painter.setPen(QPen(color, 2 if self.dragging_point != name else 3))
+                painter.setBrush(QColor(color.red(), color.green(), color.blue(), 200 if self.dragging_point != name else 140))
+                painter.drawEllipse(screen_point, point_radius + (3 if self.dragging_point == name else 0), point_radius + (3 if self.dragging_point == name else 0))
+
         painter.restore()
     
     def _find_spline_insertion_index(self, spline, point: QPointF) -> int:
@@ -720,6 +800,245 @@ class CoordinateSystemWidget(QWidget):
         """Очищает точки ввода"""
         self.input_points = []
         self.update()
+
+    def set_dimension_creation_type(self, dimension_type: str):
+        """Устанавливает тип создаваемого размера."""
+        self.dimension_creation_type = dimension_type or 'horizontal'
+        if self._dimension_state is not None:
+            self._cancel_dimension_drawing()
+
+    def _new_dimension_style(self):
+        return get_dimension_style_preset()
+
+    def _build_dimension_anchor(self, point: QPointF):
+        if self.current_snap_point is None:
+            return free_anchor(point)
+        return make_anchor_from_object_point(
+            point,
+            getattr(self.current_snap_point, "object", None),
+            getattr(self.current_snap_point, "snap_type", None),
+        )
+
+    def _begin_dimension_preview(self, obj):
+        self.scene._current_object = obj
+        self.scene._drawing_type = 'dimension'
+        self.scene._is_drawing = True
+        if self.layer_manager is not None:
+            obj.layer_name = self.layer_manager.current_layer_name
+
+    def _cancel_dimension_drawing(self):
+        self._dimension_state = None
+        if self.scene._drawing_type == 'dimension':
+            self.scene._current_object = None
+            self.scene._drawing_type = None
+            self.scene._is_drawing = False
+        self.update()
+
+    def _commit_dimension_preview(self):
+        obj = self.scene.get_current_object()
+        if obj is None:
+            return None
+        if self.layer_manager is not None:
+            obj.layer_name = self.layer_manager.current_layer_name
+        self.scene.add_object(obj)
+        self.scene._current_object = None
+        self.scene._drawing_type = None
+        self.scene._is_drawing = False
+        self._dimension_state = None
+        return obj
+
+    def _dimension_offset_from_point(self, state, point: QPointF) -> float:
+        start = state["points"][0]
+        end = state["points"][1]
+        kind = state["kind"]
+        if kind == "horizontal":
+            reference = max(start.y(), end.y()) if point.y() >= (start.y() + end.y()) / 2 else min(start.y(), end.y())
+            return point.y() - reference
+        if kind == "vertical":
+            reference = max(start.x(), end.x()) if point.x() >= (start.x() + end.x()) / 2 else min(start.x(), end.x())
+            return point.x() - reference
+        dx = end.x() - start.x()
+        dy = end.y() - start.y()
+        length = math.hypot(dx, dy)
+        if length < 1e-9:
+            return 0.0
+        nx = -dy / length
+        ny = dx / length
+        return (point.x() - start.x()) * nx + (point.y() - start.y()) * ny
+
+    def _create_radial_dimension_from_object(self, obj, point: QPointF):
+        if isinstance(obj, Circle):
+            center = QPointF(obj.center)
+            radius_point = make_anchor_from_object_point(point, obj, "vertex").resolve()
+            return center, radius_point
+
+        if isinstance(obj, Arc):
+            center = QPointF(obj.center)
+            radius_point = make_anchor_from_object_point(point, obj, "vertex").resolve()
+            return center, radius_point
+
+        return None, None
+
+    def _update_linear_dimension_preview(self, point: QPointF):
+        state = self._dimension_state
+        preview = self.scene.get_current_object()
+        if preview is None or not isinstance(preview, LinearDimension):
+            return
+
+        if len(state["points"]) == 1:
+            preview.start = QPointF(state["points"][0])
+            preview.end = QPointF(point)
+            preview.offset = 10.0
+            preview.set_associations(state["anchors"][0], None)
+            return
+
+        preview.start = QPointF(state["points"][0])
+        preview.end = QPointF(state["points"][1])
+        preview.offset = self._dimension_offset_from_point(state, point)
+        preview.set_associations(state["anchors"][0], state["anchors"][1])
+
+    def _update_radial_dimension_preview(self, point: QPointF):
+        state = self._dimension_state
+        preview = self.scene.get_current_object()
+        if preview is None or not isinstance(preview, RadialDimension):
+            return
+
+        preview.center = QPointF(state["center"])
+        if len(state["points"]) == 1:
+            preview.radius_point = QPointF(point)
+            preview.leader_point = None
+            preview.set_associations(state.get("center_anchor"), None)
+            return
+
+        preview.radius_point = QPointF(state["points"][1])
+        preview.leader_point = QPointF(point)
+        preview.set_associations(state.get("center_anchor"), state.get("radius_anchor"))
+        preview._update_leader_offset()
+
+    def _update_angular_dimension_preview(self, point: QPointF):
+        state = self._dimension_state
+        preview = self.scene.get_current_object()
+        if preview is None or not isinstance(preview, AngularDimension):
+            return
+
+        preview.vertex = QPointF(state["points"][0])
+        if len(state["points"]) == 1:
+            preview.ray_start = QPointF(point)
+            preview.ray_end = QPointF(point)
+            preview.radius = 20.0
+            preview.set_associations(state["anchors"][0], None, None)
+            return
+
+        preview.ray_start = QPointF(state["points"][1])
+        if len(state["points"]) == 2:
+            preview.ray_end = QPointF(point)
+            preview.radius = max(20.0, math.hypot(point.x() - preview.vertex.x(), point.y() - preview.vertex.y()) * 0.5)
+            preview.set_associations(state["anchors"][0], state["anchors"][1], None)
+            return
+
+        preview.ray_end = QPointF(state["points"][2])
+        preview.radius = max(1.0, math.hypot(point.x() - preview.vertex.x(), point.y() - preview.vertex.y()))
+        preview.set_associations(state["anchors"][0], state["anchors"][1], state["anchors"][2])
+
+    def _update_dimension_preview(self, point: QPointF):
+        if self._dimension_state is None:
+            return
+        kind = self._dimension_state["kind"]
+        if kind in {"horizontal", "vertical", "aligned"}:
+            self._update_linear_dimension_preview(point)
+        elif kind in {"radius", "diameter"}:
+            self._update_radial_dimension_preview(point)
+        else:
+            self._update_angular_dimension_preview(point)
+
+    def _handle_dimension_click(self, point: QPointF):
+        state = self._dimension_state
+        kind = self.dimension_creation_type
+
+        if state is None:
+            if kind in {"horizontal", "vertical", "aligned"}:
+                anchor = self._build_dimension_anchor(point)
+                preview = LinearDimension(point, point, dimension_type=kind, offset=10.0, style=self._new_dimension_style())
+                preview.set_associations(anchor, None)
+                self._dimension_state = {"kind": kind, "points": [QPointF(point)], "anchors": [anchor]}
+                self._begin_dimension_preview(preview)
+                return True
+
+            if kind in {"radius", "diameter"}:
+                clicked_obj = self.selection_manager.find_object_at_point(point, self.scene.get_objects(), tolerance=8.0 / max(self.viewport.get_scale(), 1e-6))
+                if isinstance(clicked_obj, (Circle, Arc)):
+                    center, radius_point = self._create_radial_dimension_from_object(clicked_obj, point)
+                    if center is not None and radius_point is not None:
+                        center_anchor = make_anchor_from_object_point(center, clicked_obj, "center")
+                        radius_anchor = make_anchor_from_object_point(radius_point, clicked_obj, "vertex")
+                        preview = RadialDimension(center, radius_point, dimension_type=kind, style=self._new_dimension_style())
+                        preview.set_associations(center_anchor, radius_anchor)
+                        self._dimension_state = {
+                            "kind": kind,
+                            "points": [QPointF(center), QPointF(radius_point)],
+                            "center": QPointF(center),
+                            "center_anchor": center_anchor,
+                            "radius_anchor": radius_anchor,
+                            "source_object": clicked_obj,
+                        }
+                        self._begin_dimension_preview(preview)
+                        return True
+
+                center_anchor = self._build_dimension_anchor(point)
+                preview = RadialDimension(point, point, dimension_type=kind, style=self._new_dimension_style())
+                preview.set_associations(center_anchor, None)
+                self._dimension_state = {
+                    "kind": kind,
+                    "points": [QPointF(point)],
+                    "center": QPointF(point),
+                    "center_anchor": center_anchor,
+                    "radius_anchor": None,
+                }
+                self._begin_dimension_preview(preview)
+                return True
+
+            vertex_anchor = self._build_dimension_anchor(point)
+            preview = AngularDimension(point, point, point, radius=20.0, style=self._new_dimension_style())
+            preview.set_associations(vertex_anchor, None, None)
+            self._dimension_state = {"kind": kind, "points": [QPointF(point)], "anchors": [vertex_anchor]}
+            self._begin_dimension_preview(preview)
+            return True
+
+        if kind in {"horizontal", "vertical", "aligned"}:
+            if len(state["points"]) == 1:
+                state["points"].append(QPointF(point))
+                state["anchors"].append(self._build_dimension_anchor(point))
+                self._update_dimension_preview(point)
+                return True
+            self._update_dimension_preview(point)
+            obj = self._commit_dimension_preview()
+            if obj:
+                self.line_finished.emit()
+            return True
+
+        if kind in {"radius", "diameter"}:
+            if len(state["points"]) == 1:
+                state["points"].append(QPointF(point))
+                state["radius_anchor"] = self._build_dimension_anchor(point)
+                self._update_dimension_preview(point)
+                return True
+            self._update_dimension_preview(point)
+            obj = self._commit_dimension_preview()
+            if obj:
+                self.line_finished.emit()
+            return True
+
+        if len(state["points"]) < 3:
+            state["points"].append(QPointF(point))
+            state["anchors"].append(self._build_dimension_anchor(point))
+            self._update_dimension_preview(point)
+            return True
+
+        self._update_dimension_preview(point)
+        obj = self._commit_dimension_preview()
+        if obj:
+            self.line_finished.emit()
+        return True
 
     def _finish_drawing_with_layer(self):
         """Завершает рисование и выставляет текущий слой на созданный объект."""
@@ -1050,6 +1369,60 @@ class CoordinateSystemWidget(QWidget):
                                 self.edit_dialog.update_spline_info()
                             self.update()
                             return
+                    elif isinstance(obj, LinearDimension):
+                        geom = obj._geometry()
+                        offset_handle = QPointF(
+                            (geom[4].x() + geom[5].x()) / 2.0,
+                            (geom[4].y() + geom[5].y()) / 2.0,
+                        )
+                        handles = {
+                            'start': obj.start,
+                            'end': obj.end,
+                            'offset': offset_handle,
+                            'text': obj.get_text_position(),
+                        }
+                        for handle_name, handle_point in handles.items():
+                            if math.hypot(world_pos.x() - handle_point.x(), world_pos.y() - handle_point.y()) <= tolerance:
+                                self.dragging_point = handle_name
+                                self.drag_start_pos = world_pos
+                                if self.edit_dialog:
+                                    self.edit_dialog.set_dragging_point(handle_name)
+                                return
+                    elif isinstance(obj, RadialDimension):
+                        radius_tip, _, ux, uy = obj._axis_points()
+                        handles = {
+                            'center': obj.center,
+                            'radius': obj.radius_point,
+                            'leader': obj._line_end(radius_tip, ux, uy),
+                            'text': obj.get_text_position(),
+                        }
+                        for handle_name, handle_point in handles.items():
+                            if math.hypot(world_pos.x() - handle_point.x(), world_pos.y() - handle_point.y()) <= tolerance:
+                                self.dragging_point = handle_name
+                                self.drag_start_pos = world_pos
+                                if self.edit_dialog:
+                                    self.edit_dialog.set_dragging_point(handle_name)
+                                return
+                    elif isinstance(obj, AngularDimension):
+                        mid_angle = obj._mid_angle()
+                        arc_handle = QPointF(
+                            obj.vertex.x() + obj.radius * math.cos(mid_angle),
+                            obj.vertex.y() + obj.radius * math.sin(mid_angle),
+                        )
+                        handles = {
+                            'vertex': obj.vertex,
+                            'ray_start': obj.ray_start,
+                            'ray_end': obj.ray_end,
+                            'radius': arc_handle,
+                            'text': obj.get_text_position(),
+                        }
+                        for handle_name, handle_point in handles.items():
+                            if math.hypot(world_pos.x() - handle_point.x(), world_pos.y() - handle_point.y()) <= tolerance:
+                                self.dragging_point = handle_name
+                                self.drag_start_pos = world_pos
+                                if self.edit_dialog:
+                                    self.edit_dialog.set_dragging_point(handle_name)
+                                return
                 
                 # В режиме редактирования не начинаем рисование нового объекта
                 # Просто выходим, если клик не попал по точкам
@@ -1063,6 +1436,13 @@ class CoordinateSystemWidget(QWidget):
                 # Проверяем, есть ли активная точка привязки
                 # Если есть - начинаем рисование из этой точки, не проверяя клик по объекту
                 has_active_snap = self.current_snap_point is not None
+
+                if self.primitive_type == 'dimension':
+                    handled = self._handle_dimension_click(world_pos)
+                    if handled:
+                        self.setFocus()
+                        self.update()
+                        return
                 
                 # Проверяем, кликнули ли по существующему объекту (для выделения)
                 # Но только если мы не рисуем новый объект И нет активной точки привязки
@@ -1678,7 +2058,63 @@ class CoordinateSystemWidget(QWidget):
                                     self.edit_dialog.update_spline_info()
                         except (ValueError, IndexError):
                             pass
+                elif isinstance(obj, LinearDimension):
+                    if self.dragging_point == 'start':
+                        obj.start = QPointF(world_pos)
+                        obj.start_anchor = free_anchor(world_pos)
+                    elif self.dragging_point == 'end':
+                        obj.end = QPointF(world_pos)
+                        obj.end_anchor = free_anchor(world_pos)
+                    elif self.dragging_point == 'offset':
+                        if obj.dimension_type == 'horizontal':
+                            reference = max(obj.start.y(), obj.end.y()) if world_pos.y() >= (obj.start.y() + obj.end.y()) / 2 else min(obj.start.y(), obj.end.y())
+                            obj.offset = world_pos.y() - reference
+                        elif obj.dimension_type == 'vertical':
+                            reference = max(obj.start.x(), obj.end.x()) if world_pos.x() >= (obj.start.x() + obj.end.x()) / 2 else min(obj.start.x(), obj.end.x())
+                            obj.offset = world_pos.x() - reference
+                        else:
+                            dx = obj.end.x() - obj.start.x()
+                            dy = obj.end.y() - obj.start.y()
+                            length = math.hypot(dx, dy)
+                            if length > 1e-9:
+                                nx = -dy / length
+                                ny = dx / length
+                                obj.offset = (world_pos.x() - obj.start.x()) * nx + (world_pos.y() - obj.start.y()) * ny
+                    elif self.dragging_point == 'text':
+                        obj.set_text_position(world_pos, obj.get_default_text_position())
+                elif isinstance(obj, RadialDimension):
+                    if self.dragging_point == 'center':
+                        obj.center = QPointF(world_pos)
+                        obj.center_anchor = free_anchor(world_pos)
+                        obj._update_leader_offset()
+                    elif self.dragging_point == 'radius':
+                        obj.radius_point = QPointF(world_pos)
+                        obj.radius_anchor = free_anchor(world_pos)
+                    elif self.dragging_point == 'leader':
+                        obj.leader_point = QPointF(world_pos)
+                        obj._update_leader_offset()
+                    elif self.dragging_point == 'text':
+                        obj.set_text_position(world_pos, obj.get_default_text_position())
+                elif isinstance(obj, AngularDimension):
+                    if self.dragging_point == 'vertex':
+                        obj.vertex = QPointF(world_pos)
+                        obj.vertex_anchor = free_anchor(world_pos)
+                    elif self.dragging_point == 'ray_start':
+                        obj.ray_start = QPointF(world_pos)
+                        obj.ray_start_anchor = free_anchor(world_pos)
+                    elif self.dragging_point == 'ray_end':
+                        obj.ray_end = QPointF(world_pos)
+                        obj.ray_end_anchor = free_anchor(world_pos)
+                    elif self.dragging_point == 'radius':
+                        obj.radius = max(1.0, math.hypot(world_pos.x() - obj.vertex.x(), world_pos.y() - obj.vertex.y()))
+                    elif self.dragging_point == 'text':
+                        obj.set_text_position(world_pos, obj.get_default_text_position())
                 
+                self.scene.notify_geometry_changed(obj)
+                if self.edit_dialog:
+                    if isinstance(obj, (LinearDimension, RadialDimension, AngularDimension)):
+                        self.edit_dialog.load_dimension_data(obj)
+                    self.edit_dialog.apply_changes()
                 self.update()
                 return
         
@@ -1783,7 +2219,9 @@ class CoordinateSystemWidget(QWidget):
             world_pos = self._apply_snapping(world_pos)
             
             # Для дуги и эллипса во время второго этапа показываем предпросмотр конечной точки
-            if self.primitive_type == 'arc':
+            if self.primitive_type == 'dimension':
+                self._update_dimension_preview(world_pos)
+            elif self.primitive_type == 'arc':
                 method = self.arc_creation_method
                 if method == 'three_points':
                     # Обновляем конечную точку для предпросмотра (временно, только для отображения)
@@ -1834,7 +2272,10 @@ class CoordinateSystemWidget(QWidget):
         
         # Отменяем рисование, если оно активно
         if self.scene.is_drawing():
-            self.scene.cancel_drawing()
+            if self.scene._drawing_type == 'dimension':
+                self._cancel_dimension_drawing()
+            else:
+                self.scene.cancel_drawing()
             self.update()
         
         # Очищаем выделение рамкой, если оно было начато
@@ -1938,7 +2379,10 @@ class CoordinateSystemWidget(QWidget):
                 if delta <= 3:
                     # Это был клик без движения - отменяем рисование сразу
                     if self.scene.is_drawing():
-                        self.scene.cancel_drawing()
+                        if self.scene._drawing_type == 'dimension':
+                            self._cancel_dimension_drawing()
+                        else:
+                            self.scene.cancel_drawing()
                         # Останавливаем таймер, так как уже обработали
                         if self.right_button_click_timer:
                             self.right_button_click_timer.stop()
@@ -1995,7 +2439,10 @@ class CoordinateSystemWidget(QWidget):
         if event.key() == Qt.Key.Key_Escape:
             # Отменяем рисование, если оно активно
             if self.scene.is_drawing():
-                self.scene.cancel_drawing()
+                if self.scene._drawing_type == 'dimension':
+                    self._cancel_dimension_drawing()
+                else:
+                    self.scene.cancel_drawing()
                 self.update()
                 return
         
@@ -2232,6 +2679,8 @@ class CoordinateSystemWidget(QWidget):
     
     def set_primitive_type(self, primitive_type: str):
         """Устанавливает тип создаваемого примитива"""
+        if primitive_type != 'dimension' and self._dimension_state is not None:
+            self._cancel_dimension_drawing()
         self.primitive_type = primitive_type
     
     def set_circle_creation_method(self, method: str):

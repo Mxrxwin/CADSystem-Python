@@ -1,10 +1,17 @@
-﻿import math
+﻿import copy
+import math
 from dataclasses import dataclass, field
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetricsF, QPainter, QPainterPath, QPen, QBrush, QPolygonF
 
 from core.geometry import Drawable, GeometricObject
+from widgets.line_segment import LineSegment
+from widgets.primitives import Circle, Arc, Rectangle, Ellipse, Polygon, Spline
+
+
+DEFAULT_DIMENSION_STYLE_NAME = "ЕСКД"
+CUSTOM_DIMENSION_STYLE_NAME = "Индивидуальный"
 
 
 def _point_distance(a: QPointF, b: QPointF) -> float:
@@ -26,6 +33,10 @@ def _copy_point(point: QPointF) -> QPointF:
     return QPointF(point)
 
 
+def _copy_optional_point(point: QPointF | None) -> QPointF | None:
+    return QPointF(point) if point is not None else None
+
+
 def _midpoint(a: QPointF, b: QPointF) -> QPointF:
     return QPointF((a.x() + b.x()) / 2, (a.y() + b.y()) / 2)
 
@@ -39,6 +50,8 @@ def _scaled_width(width_px: float, scale_factor: float) -> float:
 
 
 def _bounding_rect(points: list[QPointF]) -> QRectF:
+    if not points:
+        return QRectF()
     min_x = min(p.x() for p in points)
     min_y = min(p.y() for p in points)
     max_x = max(p.x() for p in points)
@@ -59,6 +72,253 @@ def _line_pen(color: QColor, line_type: str, width_px: float = 1.0) -> QPen:
 def _format_value(value: float, suffix: str = "") -> str:
     text = f"{value:.2f}".rstrip("0").rstrip(".")
     return f"{text}{suffix}"
+
+
+def _point_to_line_param(point: QPointF, start: QPointF, end: QPointF) -> float:
+    dx = end.x() - start.x()
+    dy = end.y() - start.y()
+    denom = dx * dx + dy * dy
+    if denom < 1e-9:
+        return 0.0
+    t = ((point.x() - start.x()) * dx + (point.y() - start.y()) * dy) / denom
+    return max(0.0, min(1.0, t))
+
+
+def _point_on_line(start: QPointF, end: QPointF, t: float) -> QPointF:
+    return QPointF(
+        start.x() + (end.x() - start.x()) * t,
+        start.y() + (end.y() - start.y()) * t,
+    )
+
+
+def _ellipse_param_from_point(center: QPointF, radius_x: float, radius_y: float, rotation_angle: float, point: QPointF) -> float:
+    if radius_x <= 1e-9 or radius_y <= 1e-9:
+        return 0.0
+    dx = point.x() - center.x()
+    dy = point.y() - center.y()
+    cos_r = math.cos(-rotation_angle)
+    sin_r = math.sin(-rotation_angle)
+    local_x = dx * cos_r - dy * sin_r
+    local_y = dx * sin_r + dy * cos_r
+    return math.atan2(local_y / max(radius_y, 1e-9), local_x / max(radius_x, 1e-9))
+
+
+def _ellipse_point(center: QPointF, radius_x: float, radius_y: float, rotation_angle: float, param: float) -> QPointF:
+    local_x = radius_x * math.cos(param)
+    local_y = radius_y * math.sin(param)
+    cos_r = math.cos(rotation_angle)
+    sin_r = math.sin(rotation_angle)
+    return QPointF(
+        center.x() + local_x * cos_r - local_y * sin_r,
+        center.y() + local_x * sin_r + local_y * cos_r,
+    )
+
+
+def _rectangle_handles(rect: Rectangle) -> dict[str, QPointF]:
+    bbox = rect.get_bounding_box()
+    center = bbox.center()
+    return {
+        "center": QPointF(center.x(), center.y()),
+        "top_left": QPointF(bbox.left(), bbox.top()),
+        "top_right": QPointF(bbox.right(), bbox.top()),
+        "bottom_left": QPointF(bbox.left(), bbox.bottom()),
+        "bottom_right": QPointF(bbox.right(), bbox.bottom()),
+        "mid_top": QPointF(center.x(), bbox.top()),
+        "mid_bottom": QPointF(center.x(), bbox.bottom()),
+        "mid_left": QPointF(bbox.left(), center.y()),
+        "mid_right": QPointF(bbox.right(), center.y()),
+    }
+
+
+def _nearest_named_point(point: QPointF, named_points: dict[str, QPointF]) -> str:
+    best_name = next(iter(named_points))
+    best_distance = float("inf")
+    for name, candidate in named_points.items():
+        distance = _point_distance(point, candidate)
+        if distance < best_distance:
+            best_distance = distance
+            best_name = name
+    return best_name
+
+
+@dataclass
+class GeometryAnchor:
+    kind: str = "free"
+    source_object: object | None = None
+    fallback: QPointF = field(default_factory=QPointF)
+    data: dict = field(default_factory=dict)
+
+    def resolve(self) -> QPointF:
+        point = resolve_geometry_anchor(self)
+        self.fallback = QPointF(point)
+        return point
+
+
+def free_anchor(point: QPointF) -> GeometryAnchor:
+    return GeometryAnchor(kind="free", fallback=QPointF(point))
+
+
+def resolve_geometry_anchor(anchor: GeometryAnchor | None) -> QPointF:
+    if anchor is None:
+        return QPointF()
+
+    obj = anchor.source_object
+    if obj is None:
+        return QPointF(anchor.fallback)
+
+    kind = anchor.kind
+    data = anchor.data
+
+    if isinstance(obj, LineSegment):
+        role = data.get("role", "param")
+        if role == "start":
+            return QPointF(obj.start_point)
+        if role == "end":
+            return QPointF(obj.end_point)
+        if role == "mid":
+            return _midpoint(obj.start_point, obj.end_point)
+        return _point_on_line(obj.start_point, obj.end_point, float(data.get("t", 0.0)))
+
+    if isinstance(obj, Circle):
+        if kind == "circle_center":
+            return QPointF(obj.center)
+        angle = float(data.get("angle", 0.0))
+        return QPointF(
+            obj.center.x() + obj.radius * math.cos(angle),
+            obj.center.y() + obj.radius * math.sin(angle),
+        )
+
+    if isinstance(obj, Arc):
+        if kind == "arc_center":
+            return QPointF(obj.center)
+        angle = float(data.get("angle", obj.start_angle))
+        return obj.get_point_at_angle(angle)
+
+    if isinstance(obj, Ellipse):
+        if kind == "ellipse_center":
+            return QPointF(obj.center)
+        param = float(data.get("param", 0.0))
+        return _ellipse_point(obj.center, obj.radius_x, obj.radius_y, obj.rotation_angle, param)
+
+    if isinstance(obj, Rectangle):
+        handles = _rectangle_handles(obj)
+        return QPointF(handles.get(data.get("role", "top_left"), anchor.fallback))
+
+    if isinstance(obj, Polygon):
+        if data.get("role") == "center":
+            return QPointF(obj.center)
+        vertices = obj.get_vertices()
+        if not vertices:
+            return QPointF(anchor.fallback)
+        if data.get("role") == "edge_mid":
+            index = int(data.get("index", 0)) % len(vertices)
+            return _midpoint(vertices[index], vertices[(index + 1) % len(vertices)])
+        index = int(data.get("index", 0)) % len(vertices)
+        return QPointF(vertices[index])
+
+    if isinstance(obj, Spline):
+        points = getattr(obj, "control_points", [])
+        if not points:
+            return QPointF(anchor.fallback)
+        index = int(data.get("index", 0))
+        index = max(0, min(index, len(points) - 1))
+        return QPointF(points[index])
+
+    return QPointF(anchor.fallback)
+
+
+def make_anchor_from_object_point(point: QPointF, source_object=None, snap_type=None) -> GeometryAnchor:
+    if source_object is None:
+        return free_anchor(point)
+
+    snap_value = getattr(snap_type, "value", snap_type)
+    snap_value = str(snap_value or "").lower()
+
+    if isinstance(source_object, LineSegment):
+        if snap_value == "end":
+            if _point_distance(point, source_object.start_point) <= _point_distance(point, source_object.end_point):
+                return GeometryAnchor("line_point", source_object, QPointF(point), {"role": "start"})
+            return GeometryAnchor("line_point", source_object, QPointF(point), {"role": "end"})
+        if snap_value == "middle":
+            return GeometryAnchor("line_point", source_object, QPointF(point), {"role": "mid"})
+        return GeometryAnchor(
+            "line_point",
+            source_object,
+            QPointF(point),
+            {"role": "param", "t": _point_to_line_param(point, source_object.start_point, source_object.end_point)},
+        )
+
+    if isinstance(source_object, Circle):
+        if snap_value == "center":
+            return GeometryAnchor("circle_center", source_object, QPointF(point))
+        angle = math.atan2(point.y() - source_object.center.y(), point.x() - source_object.center.x())
+        return GeometryAnchor("circle_point", source_object, QPointF(point), {"angle": angle})
+
+    if isinstance(source_object, Arc):
+        if snap_value == "center":
+            return GeometryAnchor("arc_center", source_object, QPointF(point))
+        angle = math.degrees(
+            _ellipse_param_from_point(
+                source_object.center,
+                source_object.radius_x,
+                source_object.radius_y,
+                source_object.rotation_angle,
+                point,
+            )
+        )
+        return GeometryAnchor("arc_point", source_object, QPointF(point), {"angle": angle})
+
+    if isinstance(source_object, Ellipse):
+        if snap_value == "center":
+            return GeometryAnchor("ellipse_center", source_object, QPointF(point))
+        param = _ellipse_param_from_point(
+            source_object.center,
+            source_object.radius_x,
+            source_object.radius_y,
+            source_object.rotation_angle,
+            point,
+        )
+        return GeometryAnchor("ellipse_point", source_object, QPointF(point), {"param": param})
+
+    if isinstance(source_object, Rectangle):
+        handles = _rectangle_handles(source_object)
+        if snap_value == "center":
+            role = "center"
+        elif snap_value == "middle":
+            role = _nearest_named_point(point, {k: v for k, v in handles.items() if k.startswith("mid_")})
+        else:
+            role = _nearest_named_point(
+                point,
+                {k: v for k, v in handles.items() if k in {"top_left", "top_right", "bottom_left", "bottom_right"}},
+            )
+        return GeometryAnchor("rectangle_handle", source_object, QPointF(point), {"role": role})
+
+    if isinstance(source_object, Polygon):
+        if snap_value == "center":
+            return GeometryAnchor("polygon_point", source_object, QPointF(point), {"role": "center"})
+        vertices = source_object.get_vertices()
+        if vertices:
+            if snap_value == "middle":
+                best_index = 0
+                best_distance = float("inf")
+                for index, vertex in enumerate(vertices):
+                    edge_mid = _midpoint(vertex, vertices[(index + 1) % len(vertices)])
+                    distance = _point_distance(point, edge_mid)
+                    if distance < best_distance:
+                        best_distance = distance
+                        best_index = index
+                return GeometryAnchor("polygon_point", source_object, QPointF(point), {"role": "edge_mid", "index": best_index})
+
+            best_index = min(range(len(vertices)), key=lambda index: _point_distance(point, vertices[index]))
+            return GeometryAnchor("polygon_point", source_object, QPointF(point), {"role": "vertex", "index": best_index})
+
+    if isinstance(source_object, Spline):
+        points = getattr(source_object, "control_points", [])
+        if points:
+            best_index = min(range(len(points)), key=lambda index: _point_distance(point, points[index]))
+            return GeometryAnchor("spline_point", source_object, QPointF(point), {"index": best_index})
+
+    return free_anchor(point)
 
 
 def _resolve_dimension_font_family() -> str:
@@ -104,7 +364,7 @@ class DimensionLineParams:
 @dataclass
 class ArrowParams:
     arrow_type: str = "closed_filled"
-    size: float = 3.5
+    size: float = 5.0
     filled: bool = True
     color: QColor = field(default_factory=lambda: QColor(0, 0, 0))
 
@@ -120,6 +380,7 @@ class DimensionTextParams:
 
 @dataclass
 class DimensionStyle:
+    name: str = DEFAULT_DIMENSION_STYLE_NAME
     extension_lines: ExtensionLineParams = field(default_factory=ExtensionLineParams)
     dimension_line: DimensionLineParams = field(default_factory=DimensionLineParams)
     arrows: ArrowParams = field(default_factory=ArrowParams)
@@ -130,8 +391,10 @@ class DimensionBase(GeometricObject, Drawable):
     def __init__(self, style: DimensionStyle | None = None):
         super().__init__()
         self.style = style or DimensionStyle()
+        self.style_name = getattr(self.style, "name", DEFAULT_DIMENSION_STYLE_NAME)
         self.text_override: str | None = None
         self.text_position_override: QPointF | None = None
+        self.is_associative = False
 
     def contains_point(self, point: QPointF, tolerance: float = 5.0) -> bool:
         bbox = self.get_bounding_box()
@@ -217,6 +480,20 @@ class DimensionBase(GeometricObject, Drawable):
     def _default_text(self) -> str:
         return ""
 
+    def refresh_from_associations(self) -> bool:
+        return False
+
+    def detach_object_reference(self, source_object) -> bool:
+        return False
+
+    def has_object_reference(self, source_object) -> bool:
+        return False
+
+    def mark_style_custom(self):
+        self.style_name = CUSTOM_DIMENSION_STYLE_NAME
+        if hasattr(self.style, "name"):
+            self.style.name = CUSTOM_DIMENSION_STYLE_NAME
+
     def _resolve_text_position(self, default_position: QPointF) -> QPointF:
         if self.text_position_override is None:
             return _copy_point(default_position)
@@ -280,6 +557,8 @@ class LinearDimension(DimensionBase):
         self.end = QPointF(end)
         self.dimension_type = dimension_type
         self.offset = offset
+        self.start_anchor: GeometryAnchor | None = None
+        self.end_anchor: GeometryAnchor | None = None
 
     @property
     def value(self) -> float:
@@ -345,7 +624,7 @@ class LinearDimension(DimensionBase):
 
     def get_bounding_box(self) -> QRectF:
         geom = self._geometry()
-        return _bounding_rect(list(geom[:8]) + [geom[8]])
+        return _bounding_rect(list(geom[:8]) + [self.get_text_position()])
 
     def _is_small_dimension(self, arrow1_tip: QPointF, arrow2_tip: QPointF) -> bool:
         return _point_distance(arrow1_tip, arrow2_tip) < 5.0
@@ -413,6 +692,41 @@ class LinearDimension(DimensionBase):
         line_end = geom[5]
         return self._line_angle(line_start, line_end)
 
+    def set_associations(self, start_anchor: GeometryAnchor | None, end_anchor: GeometryAnchor | None):
+        self.start_anchor = start_anchor
+        self.end_anchor = end_anchor
+        self.is_associative = any(anchor is not None and anchor.source_object is not None for anchor in (start_anchor, end_anchor))
+
+    def refresh_from_associations(self) -> bool:
+        changed = False
+        if self.start_anchor is not None and self.start_anchor.source_object is not None:
+            point = self.start_anchor.resolve()
+            if _point_distance(point, self.start) > 1e-9:
+                self.start = point
+                changed = True
+        if self.end_anchor is not None and self.end_anchor.source_object is not None:
+            point = self.end_anchor.resolve()
+            if _point_distance(point, self.end) > 1e-9:
+                self.end = point
+                changed = True
+        self.is_associative = any(anchor is not None and anchor.source_object is not None for anchor in (self.start_anchor, self.end_anchor))
+        return changed
+
+    def has_object_reference(self, source_object) -> bool:
+        return any(anchor is not None and anchor.source_object is source_object for anchor in (self.start_anchor, self.end_anchor))
+
+    def detach_object_reference(self, source_object) -> bool:
+        changed = False
+        if self.start_anchor is not None and self.start_anchor.source_object is source_object:
+            self.start_anchor = free_anchor(self.start)
+            changed = True
+        if self.end_anchor is not None and self.end_anchor.source_object is source_object:
+            self.end_anchor = free_anchor(self.end)
+            changed = True
+        if changed:
+            self.is_associative = any(anchor is not None and anchor.source_object is not None for anchor in (self.start_anchor, self.end_anchor))
+        return changed
+
 
 class RadialDimension(DimensionBase):
     def __init__(
@@ -428,6 +742,10 @@ class RadialDimension(DimensionBase):
         self.radius_point = QPointF(radius_point)
         self.dimension_type = dimension_type
         self.leader_point = QPointF(leader_point) if leader_point is not None else None
+        self.center_anchor: GeometryAnchor | None = None
+        self.radius_anchor: GeometryAnchor | None = None
+        self.leader_offset: QPointF | None = None
+        self._update_leader_offset()
 
     @property
     def radius(self) -> float:
@@ -514,6 +832,7 @@ class RadialDimension(DimensionBase):
             points.append(QPointF(self.center.x() - dx, self.center.y() - dy))
         if self.leader_point is not None:
             points.append(self.leader_point)
+        points.append(self.get_text_position())
         return _bounding_rect(points)
 
     def draw(self, painter, scale_factor: float = 1.0):
@@ -539,6 +858,50 @@ class RadialDimension(DimensionBase):
         ux, uy = self._axis_direction()
         return _angle_degrees(ux, uy)
 
+    def _update_leader_offset(self):
+        if self.leader_point is None:
+            self.leader_offset = None
+        else:
+            self.leader_offset = QPointF(self.leader_point.x() - self.center.x(), self.leader_point.y() - self.center.y())
+
+    def set_associations(self, center_anchor: GeometryAnchor | None, radius_anchor: GeometryAnchor | None):
+        self.center_anchor = center_anchor
+        self.radius_anchor = radius_anchor
+        self.is_associative = any(anchor is not None and anchor.source_object is not None for anchor in (center_anchor, radius_anchor))
+        self._update_leader_offset()
+
+    def refresh_from_associations(self) -> bool:
+        changed = False
+        if self.center_anchor is not None and self.center_anchor.source_object is not None:
+            center = self.center_anchor.resolve()
+            if _point_distance(center, self.center) > 1e-9:
+                self.center = center
+                changed = True
+        if self.radius_anchor is not None and self.radius_anchor.source_object is not None:
+            radius_point = self.radius_anchor.resolve()
+            if _point_distance(radius_point, self.radius_point) > 1e-9:
+                self.radius_point = radius_point
+                changed = True
+        if self.leader_offset is not None:
+            self.leader_point = QPointF(self.center.x() + self.leader_offset.x(), self.center.y() + self.leader_offset.y())
+        self.is_associative = any(anchor is not None and anchor.source_object is not None for anchor in (self.center_anchor, self.radius_anchor))
+        return changed
+
+    def has_object_reference(self, source_object) -> bool:
+        return any(anchor is not None and anchor.source_object is source_object for anchor in (self.center_anchor, self.radius_anchor))
+
+    def detach_object_reference(self, source_object) -> bool:
+        changed = False
+        if self.center_anchor is not None and self.center_anchor.source_object is source_object:
+            self.center_anchor = free_anchor(self.center)
+            changed = True
+        if self.radius_anchor is not None and self.radius_anchor.source_object is source_object:
+            self.radius_anchor = free_anchor(self.radius_point)
+            changed = True
+        if changed:
+            self.is_associative = any(anchor is not None and anchor.source_object is not None for anchor in (self.center_anchor, self.radius_anchor))
+        return changed
+
 
 class AngularDimension(DimensionBase):
     def __init__(
@@ -554,6 +917,9 @@ class AngularDimension(DimensionBase):
         self.ray_start = QPointF(ray_start)
         self.ray_end = QPointF(ray_end)
         self.radius = radius
+        self.vertex_anchor: GeometryAnchor | None = None
+        self.ray_start_anchor: GeometryAnchor | None = None
+        self.ray_end_anchor: GeometryAnchor | None = None
 
     @property
     def value(self) -> float:
@@ -636,7 +1002,7 @@ class AngularDimension(DimensionBase):
 
     def get_bounding_box(self) -> QRectF:
         a1, _, span = self._angles()
-        points = [self.vertex, self.ray_start, self.ray_end]
+        points = [self.vertex, self.ray_start, self.ray_end, self.get_text_position()]
         for i in range(17):
             angle = a1 + span * (i / 16.0)
             points.append(self._arc_point(angle))
@@ -667,3 +1033,104 @@ class AngularDimension(DimensionBase):
     def get_text_angle(self) -> float:
         mid_angle = self._mid_angle()
         return _angle_degrees(math.cos(mid_angle), math.sin(mid_angle)) - 90.0
+
+    def set_associations(
+        self,
+        vertex_anchor: GeometryAnchor | None,
+        ray_start_anchor: GeometryAnchor | None,
+        ray_end_anchor: GeometryAnchor | None,
+    ):
+        self.vertex_anchor = vertex_anchor
+        self.ray_start_anchor = ray_start_anchor
+        self.ray_end_anchor = ray_end_anchor
+        self.is_associative = any(
+            anchor is not None and anchor.source_object is not None
+            for anchor in (vertex_anchor, ray_start_anchor, ray_end_anchor)
+        )
+
+    def refresh_from_associations(self) -> bool:
+        changed = False
+        anchors = (
+            ("vertex", self.vertex_anchor),
+            ("ray_start", self.ray_start_anchor),
+            ("ray_end", self.ray_end_anchor),
+        )
+        for attr_name, anchor in anchors:
+            if anchor is None or anchor.source_object is None:
+                continue
+            point = anchor.resolve()
+            current = getattr(self, attr_name)
+            if _point_distance(point, current) > 1e-9:
+                setattr(self, attr_name, point)
+                changed = True
+        self.is_associative = any(
+            anchor is not None and anchor.source_object is not None
+            for anchor in (self.vertex_anchor, self.ray_start_anchor, self.ray_end_anchor)
+        )
+        return changed
+
+    def has_object_reference(self, source_object) -> bool:
+        return any(
+            anchor is not None and anchor.source_object is source_object
+            for anchor in (self.vertex_anchor, self.ray_start_anchor, self.ray_end_anchor)
+        )
+
+    def detach_object_reference(self, source_object) -> bool:
+        changed = False
+        if self.vertex_anchor is not None and self.vertex_anchor.source_object is source_object:
+            self.vertex_anchor = free_anchor(self.vertex)
+            changed = True
+        if self.ray_start_anchor is not None and self.ray_start_anchor.source_object is source_object:
+            self.ray_start_anchor = free_anchor(self.ray_start)
+            changed = True
+        if self.ray_end_anchor is not None and self.ray_end_anchor.source_object is source_object:
+            self.ray_end_anchor = free_anchor(self.ray_end)
+            changed = True
+        if changed:
+            self.is_associative = any(
+                anchor is not None and anchor.source_object is not None
+                for anchor in (self.vertex_anchor, self.ray_start_anchor, self.ray_end_anchor)
+            )
+        return changed
+
+
+def clone_dimension_style(style: DimensionStyle) -> DimensionStyle:
+    return copy.deepcopy(style)
+
+
+def _dimension_style_presets() -> dict[str, DimensionStyle]:
+    standard = DimensionStyle(name=DEFAULT_DIMENSION_STYLE_NAME)
+    standard.text.height = 3.5
+    standard.text.gap = 4.0
+    standard.arrows.size = 5.0
+    standard.extension_lines.gap_from_object = 1.5
+    standard.extension_lines.overshoot = 2.0
+    standard.dimension_line.extension = 1.5
+
+    compact = clone_dimension_style(standard)
+    compact.name = "ЕСКД компактный"
+    compact.text.height = 3.0
+    compact.text.gap = 3.0
+    compact.arrows.size = 3.0
+
+    open_arrow = clone_dimension_style(standard)
+    open_arrow.name = "ЕСКД открытая"
+    open_arrow.arrows.arrow_type = "open"
+    open_arrow.arrows.filled = False
+
+    return {
+        standard.name: standard,
+        compact.name: compact,
+        open_arrow.name: open_arrow,
+    }
+
+
+def get_dimension_style_names() -> list[str]:
+    return list(_dimension_style_presets().keys())
+
+
+def get_dimension_style_preset(name: str = DEFAULT_DIMENSION_STYLE_NAME) -> DimensionStyle:
+    presets = _dimension_style_presets()
+    if name in presets:
+        return clone_dimension_style(presets[name])
+    return clone_dimension_style(presets[DEFAULT_DIMENSION_STYLE_NAME])
